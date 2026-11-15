@@ -176,6 +176,7 @@ var sel_item := -1
 var orbs := []
 var cur_pve := false
 var aura_timer := 0.0
+var mouse_pos := Vector2.ZERO
 
 func _ready():
 	randomize()
@@ -374,7 +375,10 @@ func sell_value(u): return u.t * int(pow(3, u.s - 1)) - (1 if u.s > 1 else 0)
 
 # ---------- input ----------
 func _input(e):
-	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+	if e is InputEventMouseMotion:
+		mouse_pos = e.position
+	elif e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		mouse_pos = e.position
 		click(e.position)
 	elif e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
@@ -842,6 +846,80 @@ func button(r, label, col):
 	draw_rect(r, INK, false, 2)
 	T(r.position + Vector2(0, 29), label, 17, INK, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 
+func get_equip_preview(u, s_name: String, s_tier: int) -> Dictionary:
+	var title = "%s %s" % [u.n, "*".repeat(u.s)]
+	var lines = []
+	var its = u.get("it", [])
+
+	if its.is_empty():
+		lines.append({"t": "Equipped: None (0/3 slots)", "c": Color("8a7a5c")})
+	else:
+		lines.append({"t": "Equipped Items (%d/3):" % its.size(), "c": PARCH})
+		for idx in its.size():
+			var iname = get_it_name(its[idx])
+			var itier = get_it_tier(its[idx])
+			lines.append({"t": " • %s %s: %s" % [iname, "*".repeat(itier), get_it_desc(iname, itier)], "c": Color("e8d8c1")})
+
+	var match_idx = -1
+	for idx in its.size():
+		if get_it_name(its[idx]) == s_name:
+			match_idx = idx
+			break
+
+	if match_idx != -1:
+		var cur_t = get_it_tier(its[match_idx])
+		if cur_t >= 3:
+			lines.append({"t": "CANNOT EQUIP: %s is already Max Tier (★3)!" % s_name, "c": RED})
+		else:
+			var new_t = mini(cur_t + s_tier, 3)
+			lines.append({"t": "► MERGE UPGRADE: %s %s -> %s" % [s_name, "*".repeat(cur_t), "*".repeat(new_t)], "c": GOLD})
+			lines.append({"t": "  Current: " + get_it_desc(s_name, cur_t), "c": Color("b8a994")})
+			lines.append({"t": "  Upgraded: " + get_it_desc(s_name, new_t), "c": Color("5cdb7a")})
+			lines.append({"t": "  (Merges into existing slot)", "c": Color("8a7a5c")})
+	else:
+		if its.size() >= 3:
+			lines.append({"t": "CANNOT EQUIP: Unit slots full (3/3 items)!", "c": RED})
+		else:
+			lines.append({"t": "► NEW EQUIP (Slot %d/3): %s %s" % [its.size() + 1, s_name, "*".repeat(s_tier)], "c": Color("4aa3df")})
+			lines.append({"t": "  Grants: " + get_it_desc(s_name, s_tier), "c": Color("5cdb7a")})
+
+	return {"title": title, "col": GOLD, "lines": lines}
+
+func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Array):
+	var pad := 10.0
+	var font = ThemeDB.fallback_font
+	var title_sz := 15
+	var line_sz := 13
+
+	var max_w = font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, title_sz).x
+	for l in lines:
+		var txt = l.t if l is Dictionary else str(l)
+		var sz = font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, line_sz).x
+		if sz > max_w: max_w = sz
+	var box_w = maxf(240.0, max_w + pad * 2.0 + 12.0)
+	var box_h = pad * 2.0 + 18.0 + lines.size() * 18.0 + 8.0
+
+	var bx = pos.x + 16.0
+	var by = pos.y + 16.0
+	if bx + box_w > 1260.0: bx = pos.x - box_w - 12.0
+	if by + box_h > 700.0: by = 700.0 - box_h
+	if bx < 10.0: bx = 10.0
+	if by < 10.0: by = 10.0
+
+	var r = Rect2(bx, by, box_w, box_h)
+	draw_rect(Rect2(r.position + Vector2(4, 5), r.size), Color(0, 0, 0, 0.45))
+	draw_rect(r, Color("141112"))
+	draw_rect(r, title_col, false, 2)
+	T(r.position + Vector2(pad, 18), title, title_sz, title_col)
+	draw_line(r.position + Vector2(pad, 25), r.position + Vector2(box_w - pad, 25), Color("3a3435"), 1.0)
+
+	var y_off = 42.0
+	for l in lines:
+		var txt = l.t if l is Dictionary else str(l)
+		var col = l.get("c", PARCH) if l is Dictionary else PARCH
+		T(r.position + Vector2(pad, y_off), txt, line_sz, col)
+		y_off += 18.0
+
 func _draw():
 	draw_rect(Rect2(0, 0, 1280, 720), PARCH)
 	for y in ROWS:
@@ -971,3 +1049,88 @@ func _draw():
 		draw_rect(Rect2(0, 0, 1280, 720), Color(PARCH, 0.9))
 		T(Vector2(0, 330), "YOU WIN!" if hp > 0 else "YOU LOSE", 64, INK, 1280, HORIZONTAL_ALIGNMENT_CENTER)
 		T(Vector2(0, 380), "Click to restart", 24, PURPLE, 1280, HORIZONTAL_ALIGNMENT_CENTER)
+
+	# tooltips and equip previews
+	if phase == "prep":
+		var mp = mouse_pos if mouse_pos != Vector2.ZERO else get_viewport().get_mouse_position()
+		var tip = null
+
+		if sel_item >= 0 and sel_item < items_inv.size():
+			var s_it = items_inv[sel_item]
+			var s_name = get_it_name(s_it)
+			var s_tier = get_it_tier(s_it)
+
+			# Check bench unit hover
+			for i in 8:
+				if bench_rect(i).has_point(mp) and bench[i] != null:
+					tip = get_equip_preview(bench[i], s_name, s_tier)
+					break
+
+			# Check board unit hover
+			if tip == null:
+				var c = (mp - BO) / CELL
+				var cx = int(floor(c.x))
+				var cy = int(floor(c.y))
+				if c.x >= 0 and c.y >= 0 and cx < COLS and cy >= 3 and cy < ROWS:
+					var cell_k = Vector2i(cx, cy)
+					if board.has(cell_k):
+						tip = get_equip_preview(board[cell_k], s_name, s_tier)
+
+		if tip == null:
+			# Check item shop button hover
+			for i in item_shop.size():
+				if item_btn_rect(i).has_point(mp) and item_shop[i] != null:
+					var it = item_shop[i]
+					var rar = it.rarity
+					var r_col = RARITY_COLS.get(rar, GOLD)
+					var lines = [
+						{"t": "Cost: %d Gold" % it.cost, "c": GOLD},
+						{"t": "Tier %d: %s" % [it.t, get_it_desc(it.n, it.t)], "c": Color("5cdb7a")}
+					]
+					if it.t < 3:
+						lines.append({"t": "Duplicate upgrades:", "c": Color("8a7a5c")})
+						for t in range(it.t + 1, 4):
+							lines.append({"t": "  Tier %d: %s" % [t, get_it_desc(it.n, t)], "c": Color("b8a994")})
+					lines.append({"t": "Click to purchase into item bench", "c": Color("8a7a5c")})
+					tip = {"title": "%s %s (%s)" % [it.n, "*".repeat(it.t), rar.to_upper()], "col": r_col, "lines": lines}
+					break
+
+		if tip == null:
+			# Check inventory bench slot hover
+			for i in items_inv.size():
+				if item_slot_rect(i).has_point(mp):
+					var it = items_inv[i]
+					var iname = get_it_name(it)
+					var itier = get_it_tier(it)
+					var rar = ITEM_DB[iname].rarity if ITEM_DB.has(iname) else "common"
+					var r_col = RARITY_COLS.get(rar, GOLD)
+					var lines = [
+						{"t": "Tier %d: %s" % [itier, get_it_desc(iname, itier)], "c": Color("5cdb7a")}
+					]
+					if itier < 3:
+						lines.append({"t": "Next Tier (%s): %s" % ["*".repeat(itier + 1), get_it_desc(iname, itier + 1)], "c": Color("b8a994")})
+					lines.append({"t": "Click to select, then hover/click a unit", "c": Color("8a7a5c")})
+					tip = {"title": "%s %s (%s)" % [iname, "*".repeat(itier), rar.to_upper()], "col": r_col, "lines": lines}
+					break
+
+		if tip == null and sel != null and loc_get(sel) != null:
+			# Check stat sheet equipped items hover
+			var d = loc_get(sel)
+			var its = d.get("it", [])
+			for i in its.size():
+				var ir = Rect2(1146, 264 + i * 16, 120, 16)
+				if ir.has_point(mp):
+					var iname = get_it_name(its[i])
+					var itier = get_it_tier(its[i])
+					var rar = ITEM_DB[iname].rarity if ITEM_DB.has(iname) else "common"
+					var r_col = RARITY_COLS.get(rar, GOLD)
+					var lines = [
+						{"t": "Equipped: %s" % get_it_desc(iname, itier), "c": Color("5cdb7a")}
+					]
+					if itier < 3:
+						lines.append({"t": "Next Tier (%s): %s" % ["*".repeat(itier + 1), get_it_desc(iname, itier + 1)], "c": Color("b8a994")})
+					tip = {"title": "%s %s (%s)" % [iname, "*".repeat(itier), rar.to_upper()], "col": r_col, "lines": lines}
+					break
+
+		if tip != null:
+			draw_tooltip_box(mp, tip.title, tip.col, tip.lines)
