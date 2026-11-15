@@ -85,6 +85,21 @@ func _init():
 	assert(node.items_inv.size() == 1, "4th distinct item rejected and kept in inventory")
 	print("PASS: 3-item cap enforced when equipping 4th distinct item")
 
+	# Test 7: Hover equip preview logic
+	var dummy_u = {"n": "Knight", "t": 2, "r": false, "s": 1, "it": [{"n": "Vest", "t": 1}]}
+	var p_merge = node.get_equip_preview(dummy_u, "Vest", 1)
+	assert(p_merge.lines.any(func(l): return l.t.begins_with("► MERGE UPGRADE")), "Equip preview should detect merge upgrade")
+	print("PASS: Equip preview correctly identifies merge upgrade")
+
+	var p_new = node.get_equip_preview(dummy_u, "Sword", 1)
+	assert(p_new.lines.any(func(l): return l.t.begins_with("► NEW EQUIP")), "Equip preview should detect new equip")
+	print("PASS: Equip preview correctly identifies new equip")
+
+	dummy_u.it = [{"n": "Sword", "t": 1}, {"n": "Vest", "t": 1}, {"n": "Amp", "t": 1}]
+	var p_full = node.get_equip_preview(dummy_u, "Chainmail", 1)
+	assert(p_full.lines.any(func(l): return l.t.begins_with("CANNOT EQUIP")), "Equip preview should detect full slots")
+	print("PASS: Equip preview correctly blocks 4th distinct item")
+
 	node.free()
 	print("--- All Item & Scaling Tests Passed Successfully! ---")
 	quit(0)

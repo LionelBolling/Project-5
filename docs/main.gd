@@ -176,6 +176,35 @@ var sel_item := -1
 var orbs := []
 var cur_pve := false
 var aura_timer := 0.0
+var mouse_pos := Vector2.ZERO
+var projectiles := []
+
+func spawn_projectile(from_pos: Vector2, to_pos: Vector2, u_name: String):
+	var p_type = "arrow"
+	var col = Color("e0d8c8")
+	match u_name:
+		"Archer":
+			p_type = "arrow"
+			col = Color("7a5328")
+		"Mage":
+			p_type = "arcane"
+			col = Color("38d9ff")
+		"Witch":
+			p_type = "dark"
+			col = Color("bf36ff")
+		"Cleric":
+			p_type = "holy"
+			col = Color("ffd700")
+		"Sage":
+			p_type = "star"
+			col = Color("5cffb0")
+		_:
+			p_type = "arcane"
+			col = Color("e0d8c8")
+	projectiles.append({
+		"from": from_pos, "to": to_pos, "t": 0.0, "dur": 0.22,
+		"type": p_type, "col": col
+	})
 
 func _ready():
 	randomize()
@@ -374,7 +403,10 @@ func sell_value(u): return u.t * int(pow(3, u.s - 1)) - (1 if u.s > 1 else 0)
 
 # ---------- input ----------
 func _input(e):
-	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+	if e is InputEventMouseMotion:
+		mouse_pos = e.position
+	elif e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		mouse_pos = e.position
 		click(e.position)
 	elif e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
@@ -548,7 +580,9 @@ func make_unit(d, team, pos, mult):
 		"mana_hit": st.mana_hit, "mana_taken": st.mana_taken,
 		"crit_chance": st.crit_chance, "spells_can_crit": st.spells_can_crit,
 		"effects": st.effects, "cd": 0.5, "rng": st.rng, "cast": false,
-		"debuffs": [], "internal_cds": {}, "barrier_used": false
+		"debuffs": [], "internal_cds": {}, "barrier_used": false,
+		"anim_state": "idle", "anim_timer": randf() * 5.0, "attack_anim": 0.0,
+		"facing": (1.0 if team == 0 else -1.0)
 	})
 
 func start_battle():
@@ -562,6 +596,7 @@ func start_battle():
 	phase = "combat"
 	units = []
 	texts = []
+	projectiles = []
 	ctime = 0.0
 	aura_timer = 0.0
 	qte = null
@@ -599,6 +634,8 @@ func _process(dt):
 	if phase == "combat": sim(dt)
 	for t in texts: t.t -= dt
 	texts = texts.filter(func(t): return t.t > 0)
+	for p in projectiles: p.t += dt
+	projectiles = projectiles.filter(func(p): return p.t < p.dur)
 	queue_redraw()
 
 func apply_damage(victim, attacker, raw_dmg, is_magic) -> float:
@@ -685,6 +722,12 @@ func sim(dt):
 		for deb in u.debuffs:
 			deb.t -= dt
 		u.debuffs = u.debuffs.filter(func(d): return d.t > 0)
+		if u.attack_anim > 0.0:
+			u.attack_anim = maxf(0.0, u.attack_anim - dt)
+			if u.attack_anim <= 0.0:
+				u.anim_state = "idle"
+		else:
+			u.anim_timer += dt * (6.0 if u.anim_state == "move" else 3.0)
 
 	for u in units:
 		if u.hp <= 0 or u.cast: continue
@@ -701,9 +744,15 @@ func sim(dt):
 		var attack_cd = 1.25 / maxf(0.25, 1.0 + as_mod)
 
 		if u.pos.distance_to(tgt.pos) <= u.rng + 0.45:
+			u.facing = 1.0 if (tgt.pos.x >= u.pos.x) else -1.0
 			u.cd -= dt
 			if u.cd <= 0:
 				u.cd = attack_cd
+				u.anim_state = "attack"
+				u.attack_anim = 0.35
+				if u.d.r:
+					spawn_projectile(u.pos, tgt.pos, u.d.n)
+
 				var raw_ad = u.ad
 				if u.effects.has("Giant Slayer"):
 					var gs = u.effects["Giant Slayer"]
@@ -741,6 +790,8 @@ func sim(dt):
 
 				pop(tgt.pos, str(int(dealt)), INK)
 		else:
+			u.anim_state = "move"
+			u.facing = 1.0 if (tgt.pos.x >= u.pos.x) else -1.0
 			u.pos += (tgt.pos - u.pos).normalized() * 1.6 * dt
 			for o in units:
 				if o != u and o.hp > 0 and o.pos.distance_to(u.pos) < 0.5:
@@ -757,6 +808,12 @@ func do_cast(u, tgt):
 func apply_cast(u, tgt, bonus):
 	if tgt == null or tgt.hp <= 0: tgt = nearest(u)
 	if tgt == null: return
+	u.anim_state = "attack"
+	u.attack_anim = 0.45
+	u.facing = 1.0 if (tgt.pos.x >= u.pos.x) else -1.0
+	if u.d.r:
+		spawn_projectile(u.pos, tgt.pos, u.d.n)
+
 	var ap_mult = 1.0 + (u.ap / 100.0)
 	var raw_spell_dmg = (u.base_ad * 2.5) * ap_mult * (1.0 + bonus)
 
@@ -829,12 +886,255 @@ func end_combat(a0, a1):
 func T(p, s, size = 16, col = INK, w = -1.0, al = HORIZONTAL_ALIGNMENT_LEFT):
 	draw_string(ThemeDB.fallback_font, p, s, al, w, size, col)
 
-func token(c, d, team = 0):
-	draw_circle(c + Vector2(3, 4), 24, Color(0, 0, 0, 0.35))
-	draw_circle(c, 24, TIER_COL[d.t - 1])
-	draw_arc(c, 24, 0, TAU, 28, RED if team == 1 else INK, 3)
-	T(c + Vector2(-24, 6), d.n.substr(0, 2), 18, PARCH, 48, HORIZONTAL_ALIGNMENT_CENTER)
-	T(c + Vector2(-24, 20), "*".repeat(d.s), 16, PARCH, 48, HORIZONTAL_ALIGNMENT_CENTER)
+func draw_gold_star(center: Vector2, radius: float, is_filled = true):
+	var pts = PackedVector2Array()
+	for i in 10:
+		var a = -PI * 0.5 + i * (PI / 5.0)
+		var r = radius if (i % 2 == 0) else (radius * 0.42)
+		pts.append(center + Vector2(cos(a), sin(a)) * r)
+	if is_filled:
+		draw_colored_polygon(pts, Color("f7c828"))
+		draw_circle(center + Vector2(0, -radius * 0.28), radius * 0.18, Color("fff8c8"))
+	pts.append(pts[0])
+	draw_polyline(pts, Color("8a5b00"), 1.2)
+
+func draw_unit_stars(center: Vector2, count: int, sz: float = 6.0):
+	var spacing = sz * 2.1
+	var start_x = center.x - (count - 1) * spacing * 0.5
+	for i in count:
+		draw_gold_star(Vector2(start_x + i * spacing, center.y), sz, true)
+
+func draw_fantasy_unit(pos: Vector2, d: Dictionary, team: int = 0, anim_state: String = "idle", anim_t: float = 0.0, attack_t: float = 0.0, facing: float = 1.0):
+	var f = 1.0 if facing >= 0.0 else -1.0
+	var bob = 0.0
+	var lunge = 0.0
+	var swing = 0.0
+	var wing_flap = 0.0
+
+	if anim_state == "move":
+		bob = abs(sin(anim_t * 6.0)) * -4.0
+		lunge = sin(anim_t * 6.0) * 2.0 * f
+		wing_flap = sin(anim_t * 8.0) * 10.0
+	elif anim_state == "attack":
+		var prog = clampf(1.0 - (attack_t / 0.35), 0.0, 1.0)
+		lunge = sin(prog * PI) * 8.0 * f
+		swing = sin(prog * PI)
+		wing_flap = sin(prog * PI * 2.0) * 12.0
+	else:
+		bob = sin(anim_t * 3.0) * 2.0
+		wing_flap = sin(anim_t * 2.5) * 4.0
+
+	var c = pos + Vector2(lunge, bob)
+
+	# Ground shadow & ground team ring
+	draw_arc(pos + Vector2(0, 18), 18, 0, TAU, 24, Color(0, 0, 0, 0.3), 3.0)
+	var team_ring_col = Color("38b000") if team == 0 else Color("d9381e")
+	draw_arc(pos + Vector2(0, 18), 18, 0, TAU, 24, team_ring_col, 2.5)
+
+	match d.n:
+		"Squire":
+			# Leather tunic & bronze headband warrior with shortsword & round wooden buckler
+			draw_rect(Rect2(c + Vector2(-8 * f if f < 0 else -8, -6), Vector2(16, 18)), Color("7a4c33"))
+			draw_rect(Rect2(c + Vector2(-8 * f if f < 0 else -8, 2), Vector2(16, 4)), Color("422919"))
+			draw_circle(c + Vector2(0, -12), 9, Color("edd0b4"))
+			draw_arc(c + Vector2(0, -14), 9, -PI * 0.9, -PI * 0.1, 10, Color("523522"), 3.5)
+			# Buckler
+			draw_circle(c + Vector2(-12 * f, 2), 7, Color("6b4226"))
+			draw_circle(c + Vector2(-12 * f, 2), 3, Color("c2c8d0"))
+			# Sword thrust
+			var sp = c + Vector2(10 * f + swing * 7 * f, -2 - swing * 6)
+			draw_line(c + Vector2(6 * f, 4), sp, Color("c2c8d0"), 3.0)
+
+		"Archer":
+			# Forest ranger with green hood, quiver, and recurve longbow
+			draw_rect(Rect2(c + Vector2(-7 * f if f < 0 else -7, -5), Vector2(14, 18)), Color("326932"))
+			draw_line(c + Vector2(-8 * f, -2), c + Vector2(-12 * f, -16), Color("523522"), 3.5)
+			draw_circle(c + Vector2(-12 * f, -17), 2.5, Color("ffffff"))
+			draw_circle(c + Vector2(0, -12), 9, Color("255425"))
+			draw_circle(c + Vector2(2 * f, -11), 6, Color("edd0b4"))
+			var bow_c = c + Vector2(10 * f, 0)
+			draw_arc(bow_c, 13, -PI * 0.45, PI * 0.45, 10, Color("543015"), 3.0)
+			if anim_state == "attack":
+				draw_line(bow_c - Vector2(8 * f, 0), bow_c + Vector2(8 * f, 0), Color("e0d8c8"), 2.0)
+
+		"Knight":
+			# Heavy steel plate armor with heater shield and broadsword
+			draw_rect(Rect2(c + Vector2(-9 * f if f < 0 else -9, -6), Vector2(18, 19)), Color("8fa0b0"))
+			draw_line(c + Vector2(-9 * f, 3), c + Vector2(9 * f, 3), GOLD, 2.0)
+			draw_circle(c + Vector2(0, -13), 9, Color("768898"))
+			draw_rect(Rect2(c + Vector2(-5 * f if f < 0 else -5, -14), Vector2(10, 3)), Color("1a1617"))
+			draw_arc(c + Vector2(-2 * f, -22), 8, -PI * 0.8, -PI * 0.1, 8, Color("d02020"), 4.0)
+			# Kite shield
+			var sh_pts = PackedVector2Array([c + Vector2(-14 * f, -8), c + Vector2(-6 * f, -8), c + Vector2(-8 * f, 12), c + Vector2(-12 * f, 12)])
+			draw_colored_polygon(sh_pts, Color("1f488a"))
+			draw_polyline(PackedVector2Array([sh_pts[0], sh_pts[1], sh_pts[2], sh_pts[3], sh_pts[0]]), GOLD, 1.5)
+			# Sword slash
+			var sw_p = c + Vector2(8 * f + swing * 8 * f, -14 - swing * 6)
+			draw_line(c + Vector2(6 * f, 5), sw_p, Color("d8e0e8"), 3.5)
+
+		"Mage":
+			# Arcane wizard with pointed hat, rune robes, and glowing sapphire staff
+			var r_pts = PackedVector2Array([c + Vector2(-8, -6), c + Vector2(8, -6), c + Vector2(11, 14), c + Vector2(-11, 14)])
+			draw_colored_polygon(r_pts, Color("1c3e7a"))
+			draw_circle(c + Vector2(0, -9), 6, Color("e0e0e0"))
+			# Hat
+			var hat_pts = PackedVector2Array([c + Vector2(-11, -14), c + Vector2(11, -14), c + Vector2(0, -32)])
+			draw_colored_polygon(hat_pts, Color("1c3e7a"))
+			draw_line(c + Vector2(-13, -14), c + Vector2(13, -14), GOLD, 2.0)
+			# Staff & glowing gem
+			var staff_top = c + Vector2(11 * f, -18)
+			draw_line(c + Vector2(9 * f, 14), staff_top, Color("5c3818"), 3.0)
+			draw_circle(staff_top, 5.0, Color("38d9ff"))
+			draw_arc(staff_top, 8.0, 0, TAU, 12, Color("a8f0ff"), 1.5)
+
+		"Rogue":
+			# Shadow assassin with dark cowl and dual poison daggers
+			draw_rect(Rect2(c + Vector2(-7 * f if f < 0 else -7, -5), Vector2(14, 18)), Color("252228"))
+			draw_circle(c + Vector2(0, -12), 9, Color("1a171c"))
+			draw_circle(c + Vector2(3 * f, -12), 2, Color("70ff40"))
+			# Dual daggers
+			draw_line(c + Vector2(6 * f, 2), c + Vector2(13 * f + swing * 6 * f, -5), Color("b0bec5"), 2.5)
+			draw_line(c + Vector2(-6 * f, 2), c + Vector2(-11 * f - swing * 4 * f, 6), Color("b0bec5"), 2.5)
+			draw_circle(c + Vector2(13 * f + swing * 6 * f, -5), 2.0, Color("44dd55"))
+
+		"Cleric":
+			# Ivory priest robes, holy halo, and golden sun mace
+			var cl_pts = PackedVector2Array([c + Vector2(-8, -6), c + Vector2(8, -6), c + Vector2(10, 14), c + Vector2(-10, 14)])
+			draw_colored_polygon(cl_pts, Color("f6f4ea"))
+			draw_line(c + Vector2(-4, -6), c + Vector2(-4, 14), GOLD, 2.0)
+			draw_line(c + Vector2(4, -6), c + Vector2(4, 14), GOLD, 2.0)
+			draw_circle(c + Vector2(0, -11), 8, Color("edd0b4"))
+			# Golden Halo
+			draw_arc(c + Vector2(0, -25), 8, 0, TAU, 16, Color("ffd700"), 2.0)
+			# Sun mace
+			var mace_top = c + Vector2(10 * f, -14)
+			draw_line(c + Vector2(8 * f, 10), mace_top, GOLD, 3.0)
+			draw_circle(mace_top, 4.5, Color("ffd700"))
+
+		"Golem":
+			# Massive stone behemoth with glowing runic fissures
+			var g_pts = PackedVector2Array([c + Vector2(-14, -10), c + Vector2(14, -10), c + Vector2(11, 14), c + Vector2(-11, 14)])
+			draw_colored_polygon(g_pts, Color("4d4a48"))
+			# Runic amber cracks
+			draw_line(c + Vector2(-6, -6), c + Vector2(4, 2), Color("ff7a00"), 2.0)
+			draw_line(c + Vector2(4, 2), c + Vector2(-2, 10), Color("ff7a00"), 2.0)
+			# Stone head
+			draw_rect(Rect2(c + Vector2(-8, -20), Vector2(16, 10)), Color("3e3b39"))
+			draw_line(c + Vector2(-5, -15), c + Vector2(-2, -15), Color("ffaa00"), 2.0)
+			draw_line(c + Vector2(2, -15), c + Vector2(5, -15), Color("ffaa00"), 2.0)
+			# Bolder fists
+			draw_circle(c + Vector2(-15 * f, 4 + swing * 6), 6.5, Color("44403e"))
+			draw_circle(c + Vector2(15 * f, 4 + swing * 6), 6.5, Color("44403e"))
+
+		"Witch":
+			# Deep violet gown, wide-brimmed witch hat, and swirling shadow orb
+			var w_pts = PackedVector2Array([c + Vector2(-8, -6), c + Vector2(8, -6), c + Vector2(11, 14), c + Vector2(-11, 14)])
+			draw_colored_polygon(w_pts, Color("38134d"))
+			draw_circle(c + Vector2(0, -11), 8, Color("edd0b4"))
+			# Crooked witch hat
+			var w_hat = PackedVector2Array([c + Vector2(-12, -14), c + Vector2(12, -14), c + Vector2(-4, -30), c + Vector2(5, -34)])
+			draw_colored_polygon(w_hat, Color("270d36"))
+			draw_line(c + Vector2(-15, -14), c + Vector2(15, -14), Color("5a217a"), 2.5)
+			# Swirling shadow orb
+			var orb_p = c + Vector2(12 * f, -6 + sin(anim_t * 4.0) * 3.0)
+			draw_circle(orb_p, 5.5, Color("9b22c7"))
+			draw_arc(orb_p, 8.0, 0, TAU, 12, Color("e066ff"), 1.5)
+
+		"Dragon":
+			# Ferocious crimson scaled drake with flapping wings and horns
+			# Wings
+			var lw = PackedVector2Array([c + Vector2(-4, -4), c + Vector2(-20, -18 + wing_flap), c + Vector2(-14, 2)])
+			var rw = PackedVector2Array([c + Vector2(4, -4), c + Vector2(20, -18 + wing_flap), c + Vector2(14, 2)])
+			draw_colored_polygon(lw, Color("701010"))
+			draw_colored_polygon(rw, Color("701010"))
+			# Body & belly
+			draw_circle(c + Vector2(0, 2), 12, Color("b81d1d"))
+			draw_circle(c + Vector2(0, 4), 7, Color("d9984e"))
+			# Head & golden horns
+			draw_circle(c + Vector2(7 * f, -10), 8, Color("c92626"))
+			draw_line(c + Vector2(5 * f, -16), c + Vector2(-4 * f, -26), Color("e0b020"), 3.0)
+			draw_circle(c + Vector2(9 * f, -10), 2, Color("ffa000"))
+			if anim_state == "attack":
+				# Fire cone
+				var fire_p = PackedVector2Array([c + Vector2(15 * f, -10), c + Vector2(28 * f, -18), c + Vector2(28 * f, -2)])
+				draw_colored_polygon(fire_p, Color("ff6600"))
+
+		"Sage":
+			# Celestial starlight robes with 3 orbiting mystic spheres
+			var s_pts = PackedVector2Array([c + Vector2(-8, -6), c + Vector2(8, -6), c + Vector2(11, 14), c + Vector2(-11, 14)])
+			draw_colored_polygon(s_pts, Color("0e1d36"))
+			draw_circle(c + Vector2(0, -9), 7, Color("e8e8e8"))
+			draw_circle(c + Vector2(0, -14), 8, Color("edd0b4"))
+			draw_arc(c + Vector2(0, -21), 6, -PI * 0.8, -PI * 0.2, 8, Color("fff8c8"), 2.0)
+			# Orbiting spheres
+			var s_cols = [GOLD, Color("38d9ff"), Color("bf36ff")]
+			for i in 3:
+				var a = anim_t * 2.5 + i * (TAU / 3.0)
+				draw_circle(c + Vector2(cos(a) * 16, sin(a) * 8 - 4), 3.5, s_cols[i])
+
+		_:
+			# Default high fantasy adventurer token
+			draw_circle(c, 16, TIER_COL[clampi(d.t - 1, 0, 4)])
+			draw_arc(c, 16, 0, TAU, 20, INK, 2.0)
+
+func token(c, d, team = 0, anim_state = "idle", anim_t = 0.0, attack_t = 0.0, facing = 1.0):
+	# 1. Draw 2D fantasy character model
+	draw_fantasy_unit(c, d, team, anim_state, anim_t, attack_t, facing)
+
+	# 2. Overhead Unit Name Badge
+	var font = ThemeDB.fallback_font
+	var name_str = d.n
+	var nw = font.get_string_size(name_str, HORIZONTAL_ALIGNMENT_CENTER, -1, 11).x + 8.0
+	draw_rect(Rect2(c.x - nw * 0.5, c.y - 34, nw, 14), Color(0, 0, 0, 0.7))
+	T(c + Vector2(-nw * 0.5, -23), name_str, 11, PARCH, nw, HORIZONTAL_ALIGNMENT_CENTER)
+
+	# 3. Gold Stars above head
+	draw_unit_stars(c + Vector2(0, -42), d.s, 4.5)
+
+	# 4. Equipped item pips on ground ring
+	var its = d.get("it", [])
+	if not its.is_empty():
+		var pip_sz = 6.0
+		var pip_sp = 8.0
+		var p_start = c.x - (its.size() - 1) * pip_sp * 0.5
+		for idx in its.size():
+			var iname = get_it_name(its[idx])
+			var rar = ITEM_DB[iname].rarity if ITEM_DB.has(iname) else "common"
+			var col = RARITY_COLS.get(rar, GOLD)
+			var px = p_start + idx * pip_sp - pip_sz * 0.5
+			draw_rect(Rect2(px, c.y + 24, pip_sz, pip_sz), col)
+			draw_rect(Rect2(px, c.y + 24, pip_sz, pip_sz), INK, false, 1.0)
+
+func get_unit_hover_info(u, is_combat: bool = false) -> Dictionary:
+	var d = u.d if is_combat else u
+	var st = stats(d)
+	var title = "%s  (Tier %d %s)" % [d.n, d.t, "Ranged" if d.r else "Melee"]
+	var lines = []
+
+	if is_combat:
+		lines.append({"t": "HP: %d / %d   Mana: %d / 100" % [int(u.hp), int(u.mx), int(u.mana)], "c": GOLD})
+	else:
+		lines.append({"t": "Base HP: %d   Base AD: %d" % [int(st.hp), int(st.ad)], "c": GOLD})
+
+	lines.append({"t": "AD: %d | Armor: %d | MR: %d | AP: %d" % [int(st.ad), int(st.armor), int(st.mr), int(st.ap)], "c": Color("5cdb7a")})
+	lines.append({"t": "Attack Speed: +%d%%   Range: %.1f tiles" % [int(st.as_bonus * 100), st.rng], "c": Color("b8a994")})
+
+	var its = d.get("it", [])
+	if its.is_empty():
+		lines.append({"t": "Equipped Items: None (0/3 slots)", "c": Color("8a7a5c")})
+	else:
+		lines.append({"t": "Equipped Items (%d/3):" % its.size(), "c": PARCH})
+		for idx in its.size():
+			var iname = get_it_name(its[idx])
+			var itier = get_it_tier(its[idx])
+			var rar = ITEM_DB[iname].rarity if ITEM_DB.has(iname) else "common"
+			var col = RARITY_COLS.get(rar, GOLD)
+			lines.append({"t": " • %s %s: %s" % [iname, "*".repeat(itier), get_it_desc(iname, itier)], "c": col})
+
+	if not is_combat:
+		lines.append({"t": "Sell Value: %d Gold" % sell_value(d), "c": Color("e69a2b")})
+
+	return {"title": title, "col": TIER_COL[clampi(d.t - 1, 0, 4)], "lines": lines}
 
 func button(r, label, col):
 	draw_rect(Rect2(r.position + Vector2(3, 4), r.size), Color(0, 0, 0, 0.3))
@@ -842,37 +1142,148 @@ func button(r, label, col):
 	draw_rect(r, INK, false, 2)
 	T(r.position + Vector2(0, 29), label, 17, INK, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 
+func get_equip_preview(u, s_name: String, s_tier: int) -> Dictionary:
+	var title = "%s %s" % [u.n, "*".repeat(u.s)]
+	var lines = []
+	var its = u.get("it", [])
+
+	if its.is_empty():
+		lines.append({"t": "Equipped: None (0/3 slots)", "c": Color("8a7a5c")})
+	else:
+		lines.append({"t": "Equipped Items (%d/3):" % its.size(), "c": PARCH})
+		for idx in its.size():
+			var iname = get_it_name(its[idx])
+			var itier = get_it_tier(its[idx])
+			lines.append({"t": " • %s %s: %s" % [iname, "*".repeat(itier), get_it_desc(iname, itier)], "c": Color("e8d8c1")})
+
+	var match_idx = -1
+	for idx in its.size():
+		if get_it_name(its[idx]) == s_name:
+			match_idx = idx
+			break
+
+	if match_idx != -1:
+		var cur_t = get_it_tier(its[match_idx])
+		if cur_t >= 3:
+			lines.append({"t": "CANNOT EQUIP: %s is already Max Tier (★3)!" % s_name, "c": RED})
+		else:
+			var new_t = mini(cur_t + s_tier, 3)
+			lines.append({"t": "► MERGE UPGRADE: %s %s -> %s" % [s_name, "*".repeat(cur_t), "*".repeat(new_t)], "c": GOLD})
+			lines.append({"t": "  Current: " + get_it_desc(s_name, cur_t), "c": Color("b8a994")})
+			lines.append({"t": "  Upgraded: " + get_it_desc(s_name, new_t), "c": Color("5cdb7a")})
+			lines.append({"t": "  (Merges into existing slot)", "c": Color("8a7a5c")})
+	else:
+		if its.size() >= 3:
+			lines.append({"t": "CANNOT EQUIP: Unit slots full (3/3 items)!", "c": RED})
+		else:
+			lines.append({"t": "► NEW EQUIP (Slot %d/3): %s %s" % [its.size() + 1, s_name, "*".repeat(s_tier)], "c": Color("4aa3df")})
+			lines.append({"t": "  Grants: " + get_it_desc(s_name, s_tier), "c": Color("5cdb7a")})
+
+	return {"title": title, "col": GOLD, "lines": lines}
+
+func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Array):
+	var pad := 10.0
+	var font = ThemeDB.fallback_font
+	var title_sz := 15
+	var line_sz := 13
+
+	var max_w = font.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, title_sz).x
+	for l in lines:
+		var txt = l.t if l is Dictionary else str(l)
+		var sz = font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, line_sz).x
+		if sz > max_w: max_w = sz
+	var box_w = maxf(240.0, max_w + pad * 2.0 + 12.0)
+	var box_h = pad * 2.0 + 18.0 + lines.size() * 18.0 + 8.0
+
+	var bx = pos.x + 16.0
+	var by = pos.y + 16.0
+	if bx + box_w > 1260.0: bx = pos.x - box_w - 12.0
+	if by + box_h > 700.0: by = 700.0 - box_h
+	if bx < 10.0: bx = 10.0
+	if by < 10.0: by = 10.0
+
+	var r = Rect2(bx, by, box_w, box_h)
+	draw_rect(Rect2(r.position + Vector2(4, 5), r.size), Color(0, 0, 0, 0.45))
+	draw_rect(r, Color("141112"))
+	draw_rect(r, title_col, false, 2)
+	T(r.position + Vector2(pad, 18), title, title_sz, title_col)
+	draw_line(r.position + Vector2(pad, 25), r.position + Vector2(box_w - pad, 25), Color("3a3435"), 1.0)
+
+	var y_off = 42.0
+	for l in lines:
+		var txt = l.t if l is Dictionary else str(l)
+		var col = l.get("c", PARCH) if l is Dictionary else PARCH
+		T(r.position + Vector2(pad, y_off), txt, line_sz, col)
+		y_off += 18.0
+
 func _draw():
 	draw_rect(Rect2(0, 0, 1280, 720), PARCH)
+	var mp = mouse_pos if mouse_pos != Vector2.ZERO else get_viewport().get_mouse_position()
+
+	# Grid cells
 	for y in ROWS:
 		for x in COLS:
 			var r = Rect2(BO + Vector2(x, y) * CELL, Vector2(CELL, CELL))
 			draw_rect(r, KRAFT if y >= 3 else KRAFT.darkened(0.15))
 			draw_rect(r, INK, false, 2)
+
 	if sel != null and sel[0] == "g":
 		draw_rect(Rect2(BO + Vector2(sel[1]) * CELL, Vector2(CELL, CELL)), PURPLE, false, 4)
+
+	# Bench
 	for i in 8:
 		var r = bench_rect(i)
 		draw_rect(r, KRAFT)
 		draw_rect(r, PURPLE if (sel != null and sel[0] == "b" and sel[1] == i) else INK, false, 3 if (sel != null and sel[0] == "b" and sel[1] == i) else 2)
-		if bench[i] != null: token(r.position + Vector2(28, 28), bench[i])
+		if bench[i] != null:
+			var idle_t = Time.get_ticks_msec() / 1000.0 * 2.5 + i
+			token(r.position + Vector2(28, 28), bench[i], 0, "idle", idle_t, 0.0, 1.0)
 	T(Vector2(384, 440), "BENCH", 13)
+
+	# Combat or Board units
 	if phase == "combat":
 		for u in units:
 			if u.hp <= 0: continue
 			var c = BO + u.pos * CELL + Vector2(32, 32)
-			token(c, u.d, u.team)
-			draw_rect(Rect2(c + Vector2(-24, -34), Vector2(48, 6)), INK)
-			draw_rect(Rect2(c + Vector2(-23, -33), Vector2(46 * clampf(u.hp / u.mx, 0, 1), 4)), RED if u.team == 1 else GOLD)
+			token(c, u.d, u.team, u.anim_state, u.anim_timer, u.attack_anim, u.facing)
+			# Health & Mana bars above token
+			draw_rect(Rect2(c + Vector2(-24, -48), Vector2(48, 5)), INK)
+			draw_rect(Rect2(c + Vector2(-23, -47), Vector2(46 * clampf(u.hp / u.mx, 0, 1), 3)), RED if u.team == 1 else GOLD)
 			if u.shield > 0.0:
 				var sh_pct = clampf(u.shield / u.mx, 0, 1)
-				draw_rect(Rect2(c + Vector2(-23, -33), Vector2(46 * sh_pct, 4)), Color("e0e0ff"))
-			draw_rect(Rect2(c + Vector2(-23, -28), Vector2(46 * clampf(u.mana / 100.0, 0, 1), 3)), PURPLE)
+				draw_rect(Rect2(c + Vector2(-23, -47), Vector2(46 * sh_pct, 3)), Color("e0e0ff"))
+			draw_rect(Rect2(c + Vector2(-23, -43), Vector2(46 * clampf(u.mana / 100.0, 0, 1), 2)), PURPLE)
+
+		# Flying combat projectiles
+		for p in projectiles:
+			var curr_pos = p.from.lerp(p.to, clampf(p.t / p.dur, 0.0, 1.0))
+			var screen_p = BO + curr_pos * CELL + Vector2(32, 32)
+			var dir = (p.to - p.from).normalized()
+			match p.type:
+				"arrow":
+					var tail = screen_p - dir * 14.0
+					draw_line(tail, screen_p, Color("6b4226"), 2.0)
+					draw_line(screen_p, screen_p - dir * 4.0 + Vector2(-dir.y, dir.x) * 3.0, Color("e0d8c8"), 2.0)
+					draw_line(screen_p, screen_p - dir * 4.0 - Vector2(-dir.y, dir.x) * 3.0, Color("e0d8c8"), 2.0)
+				"arcane", "star":
+					draw_circle(screen_p, 5.0, p.col)
+					draw_arc(screen_p, 8.0, 0, TAU, 12, p.col.lightened(0.4), 1.5)
+					draw_line(screen_p - dir * 10.0, screen_p, p.col, 3.0)
+				"dark":
+					draw_circle(screen_p, 6.0, Color("140520"))
+					draw_arc(screen_p, 6.0, 0, TAU, 12, p.col, 2.0)
+				"holy":
+					draw_line(screen_p - dir * 16.0, screen_p, Color("fff8c8"), 3.5)
+					draw_circle(screen_p, 4.0, Color("ffd700"))
 	else:
-		for k in board: token(BO + Vector2(k) * CELL + Vector2(32, 32), board[k])
+		for k in board:
+			var idle_t = Time.get_ticks_msec() / 1000.0 * 2.5 + k.x * 2.0 + k.y
+			token(BO + Vector2(k) * CELL + Vector2(32, 32), board[k], 0, "idle", idle_t, 0.0, 1.0)
+
 	for t in texts:
 		T(BO + t.p * CELL + Vector2(-20, 20 - (0.8 - t.t) * 40), t.s, 22, t.c, 80, HORIZONTAL_ALIGNMENT_CENTER)
-	# shop
+
+	# Unit Shop Cards
 	for i in 5:
 		var r = card_rect(i)
 		var c = shop[i]
@@ -881,15 +1292,18 @@ func _draw():
 		draw_rect(r, INK, false, 2)
 		if c != null:
 			draw_rect(Rect2(r.position, Vector2(140, 28)), TIER_COL[c.t - 1])
-			T(r.position + Vector2(0, 20), c.n + "  " + "*".repeat(c.t), 16, PARCH, 140, HORIZONTAL_ALIGNMENT_CENTER)
+			T(r.position + Vector2(8, 20), c.n, 15, PARCH)
+			draw_unit_stars(r.position + Vector2(105, 14), c.t, 4.0)
 			T(r.position + Vector2(10, 55), "Ranged" if c.r else "Melee", 15)
 			T(r.position + Vector2(10, 75), "HP %d  AD %d" % [u_hp(c), u_ad(c)], 15)
 			T(r.position + Vector2(10, 105), "%d gold" % c.t, 18, GOLD if gold >= c.t else RED)
 		else:
 			T(r.position + Vector2(0, 65), "sold", 16, INK, 140, HORIZONTAL_ALIGNMENT_CENTER)
-	# buttons
+
+	# Buttons
 	for i in 5:
 		button(btn_rect(i), BTNS[i] + (" [ON]" if i == 1 and locked else ""), PURPLE.lightened(0.4) if i == 4 else GOLD.lightened(0.3))
+
 	# HUD
 	var hud = ["STAGE %d / 10" % stage, "HP: %d" % hp, "Gold: %d  (interest +%d)" % [gold, mini(gold / 10, 5)],
 		"Level: %d  (board %d/%d)" % [level, board.size(), level],
@@ -901,7 +1315,8 @@ func _draw():
 	T(Vector2(20, 270), "%d / %d / %d / %d / %d %%" % odds, 15)
 	T(Vector2(20, 330), "Click a unit, then click a\nslot to move/swap it.\nBottom 3 board rows only.", 14)
 	T(Vector2(20, 700), msg, 18, INK)
-	# items
+
+	# Item Shop
 	T(Vector2(20, 392), "ITEM SHOP", 14)
 	for i in item_shop.size():
 		var r = item_btn_rect(i)
@@ -918,6 +1333,8 @@ func _draw():
 			T(r.position + Vector2(10, 27), get_it_desc(it.n, it.t), 10, col.darkened(0.2))
 		else:
 			T(r.position + Vector2(10, 20), "sold", 13, INK)
+
+	# Item Inventory
 	T(Vector2(900, 364), "ITEMS (click one, then a unit)", 14)
 	for i in 8:
 		var r = item_slot_rect(i)
@@ -931,19 +1348,22 @@ func _draw():
 			var col = RARITY_COLS.get(rar, INK)
 			draw_rect(Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 3), col)
 			T(r.position + Vector2(0, 24), iname.substr(0, 6), 11, INK, 52, HORIZONTAL_ALIGNMENT_CENTER)
-			T(r.position + Vector2(0, 42), "*".repeat(itier), 13, col, 52, HORIZONTAL_ALIGNMENT_CENTER)
-	# loot orbs
+			draw_unit_stars(r.position + Vector2(26, 42), itier, 3.5)
+
+	# Loot orbs
 	for o in orbs:
 		var oc = BO + o * CELL + Vector2(32, 32)
 		draw_circle(oc, 14, GOLD)
 		draw_arc(oc, 14, 0, TAU, 20, INK, 2)
-	# stat sheet
+
+	# Stat sheet
 	if sel != null and loc_get(sel) != null:
 		var d = loc_get(sel)
 		var st = stats(d)
 		draw_rect(Rect2(1140, 60, 130, 320), KRAFT)
 		draw_rect(Rect2(1140, 60, 130, 320), INK, false, 2)
-		T(Vector2(1146, 80), d.n + " " + "*".repeat(d.s), 16)
+		T(Vector2(1146, 80), d.n, 16)
+		draw_unit_stars(Vector2(1230, 75), d.s, 4.5)
 		T(Vector2(1146, 100), "HP %d" % st.hp, 13)
 		T(Vector2(1146, 116), "AD %d" % st.ad, 13)
 		T(Vector2(1146, 132), "Armor %d" % st.armor, 13)
@@ -960,6 +1380,7 @@ func _draw():
 			var itt = get_it_tier(its[i])
 			T(Vector2(1146, 264 + i * 16), itn.substr(0, 9) + " " + "*".repeat(itt), 12)
 		T(Vector2(1146, 314), "Sell: %dg" % sell_value(d), 13)
+
 	# QTE
 	if qte != null:
 		var bx = BO.x
@@ -967,7 +1388,114 @@ func _draw():
 		draw_rect(Rect2(bx + 448 * 0.275 / 0.75, 190, 448 * 0.2 / 0.75, 60), GOLD)
 		draw_rect(Rect2(bx + 448 * qte.t / 0.75 - 3, 186, 6, 68), RED)
 		T(Vector2(bx, 182), "SPACE!  (hit the gold zone)", 22, RED, 448, HORIZONTAL_ALIGNMENT_CENTER)
+
 	if phase == "over":
 		draw_rect(Rect2(0, 0, 1280, 720), Color(PARCH, 0.9))
 		T(Vector2(0, 330), "YOU WIN!" if hp > 0 else "YOU LOSE", 64, INK, 1280, HORIZONTAL_ALIGNMENT_CENTER)
 		T(Vector2(0, 380), "Click to restart", 24, PURPLE, 1280, HORIZONTAL_ALIGNMENT_CENTER)
+
+	# Tooltips & Hover cards (renders on top of everything)
+	var tip = null
+
+	if phase == "prep" and sel_item >= 0 and sel_item < items_inv.size():
+		var s_it = items_inv[sel_item]
+		var s_name = get_it_name(s_it)
+		var s_tier = get_it_tier(s_it)
+
+		# Check bench unit hover for equip preview
+		for i in 8:
+			if bench_rect(i).has_point(mp) and bench[i] != null:
+				tip = get_equip_preview(bench[i], s_name, s_tier)
+				break
+
+		# Check board unit hover for equip preview
+		if tip == null:
+			var c = (mp - BO) / CELL
+			var cx = int(floor(c.x))
+			var cy = int(floor(c.y))
+			if c.x >= 0 and c.y >= 0 and cx < COLS and cy >= 3 and cy < ROWS:
+				var cell_k = Vector2i(cx, cy)
+				if board.has(cell_k):
+					tip = get_equip_preview(board[cell_k], s_name, s_tier)
+
+	# Item shop button hover
+	if tip == null and phase == "prep":
+		for i in item_shop.size():
+			if item_btn_rect(i).has_point(mp) and item_shop[i] != null:
+				var it = item_shop[i]
+				var rar = it.rarity
+				var r_col = RARITY_COLS.get(rar, GOLD)
+				var lines = [
+					{"t": "Cost: %d Gold" % it.cost, "c": GOLD},
+					{"t": "Tier %d: %s" % [it.t, get_it_desc(it.n, it.t)], "c": Color("5cdb7a")}
+				]
+				if it.t < 3:
+					lines.append({"t": "Duplicate upgrades:", "c": Color("8a7a5c")})
+					for t in range(it.t + 1, 4):
+						lines.append({"t": "  Tier %d: %s" % [t, get_it_desc(it.n, t)], "c": Color("b8a994")})
+				lines.append({"t": "Click to purchase into item bench", "c": Color("8a7a5c")})
+				tip = {"title": "%s %s (%s)" % [it.n, "*".repeat(it.t), rar.to_upper()], "col": r_col, "lines": lines}
+				break
+
+	# Item inventory slot hover
+	if tip == null and phase == "prep":
+		for i in items_inv.size():
+			if item_slot_rect(i).has_point(mp):
+				var it = items_inv[i]
+				var iname = get_it_name(it)
+				var itier = get_it_tier(it)
+				var rar = ITEM_DB[iname].rarity if ITEM_DB.has(iname) else "common"
+				var r_col = RARITY_COLS.get(rar, GOLD)
+				var lines = [
+					{"t": "Tier %d: %s" % [itier, get_it_desc(iname, itier)], "c": Color("5cdb7a")}
+				]
+				if itier < 3:
+					lines.append({"t": "Next Tier (%s): %s" % ["*".repeat(itier + 1), get_it_desc(iname, itier + 1)], "c": Color("b8a994")})
+				lines.append({"t": "Click to select, then hover/click a unit", "c": Color("8a7a5c")})
+				tip = {"title": "%s %s (%s)" % [iname, "*".repeat(itier), rar.to_upper()], "col": r_col, "lines": lines}
+				break
+
+	# Unit detail hover card (when no item is actively selected)
+	if tip == null and sel_item < 0:
+		if phase == "combat":
+			for u in units:
+				if u.hp <= 0: continue
+				var c = BO + u.pos * CELL + Vector2(32, 32)
+				if (c - mp).length() < 24.0:
+					tip = get_unit_hover_info(u, true)
+					break
+		else:
+			for i in 8:
+				if bench_rect(i).has_point(mp) and bench[i] != null:
+					tip = get_unit_hover_info(bench[i], false)
+					break
+			if tip == null:
+				var c = (mp - BO) / CELL
+				var cx = int(floor(c.x))
+				var cy = int(floor(c.y))
+				if c.x >= 0 and c.y >= 0 and cx < COLS and cy >= 3 and cy < ROWS:
+					var cell_k = Vector2i(cx, cy)
+					if board.has(cell_k):
+						tip = get_unit_hover_info(board[cell_k], false)
+
+	# Stat sheet equipped items hover
+	if tip == null and sel != null and loc_get(sel) != null:
+		var d = loc_get(sel)
+		var its = d.get("it", [])
+		for i in its.size():
+			var ir = Rect2(1146, 264 + i * 16, 120, 16)
+			if ir.has_point(mp):
+				var iname = get_it_name(its[i])
+				var itier = get_it_tier(its[i])
+				var rar = ITEM_DB[iname].rarity if ITEM_DB.has(iname) else "common"
+				var r_col = RARITY_COLS.get(rar, GOLD)
+				var lines = [
+					{"t": "Equipped: %s" % get_it_desc(iname, itier), "c": Color("5cdb7a")}
+				]
+				if itier < 3:
+					lines.append({"t": "Next Tier (%s): %s" % ["*".repeat(itier + 1), get_it_desc(iname, itier + 1)], "c": Color("b8a994")})
+				tip = {"title": "%s %s (%s)" % [iname, "*".repeat(itier), rar.to_upper()], "col": r_col, "lines": lines}
+				break
+
+	if tip != null:
+		draw_tooltip_box(mp, tip.title, tip.col, tip.lines)
