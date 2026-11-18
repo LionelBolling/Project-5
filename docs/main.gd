@@ -34,6 +34,7 @@ const STARTING_GOLD := 12
 const STARTING_HP := 50
 const LESSON_NEXT := Rect2(734, 98, 114, 30)
 const SKIP_TUTORIAL := Rect2(904, 14, 222, 33)
+const TITLE_PLAY := Rect2(82, 477, 214, 55)
 const TUTORIAL_LINES := [
 	["Buy the highlighted Archer. Shop units go to your bench.",
 		"Hover over a shop card to see the character, stats, and price."],
@@ -220,6 +221,9 @@ const PVE_STAGES := [1, 4, 7]
 const BTNS := ["Reroll (D) 2g", "Lock shop", "Buy XP (F) 4g", "Sell (E)", "START BATTLE (Enter)"]
 
 var gold := STARTING_GOLD
+var title_open := true
+var title_elapsed := 0.0
+var title_hover := 0.0
 var tutorial_step := Tutorial.BUY
 var practice_round := 1
 var tutorial_lesson := 0
@@ -663,6 +667,10 @@ func _input(e):
 					break
 		click(e.position)
 	elif e is InputEventKey and e.pressed and not e.echo:
+		if title_open:
+			if e.keycode == KEY_ENTER:
+				title_open = false
+			return
 		if tutorial_step != Tutorial.DONE:
 			if e.keycode == KEY_ENTER and tutorial_step == Tutorial.START:
 				tutorial_click(btn_rect(4).get_center())
@@ -685,6 +693,10 @@ func _input(e):
 			KEY_ENTER: do_btn(4)
 
 func click(p):
+	if title_open:
+		if TITLE_PLAY.has_point(p):
+			title_open = false
+		return
 	if phase == "over":
 		get_tree().reload_current_scene()
 		return
@@ -960,6 +972,12 @@ func pop(p, s, c):
 	texts.append({"p": p, "s": s, "t": 0.8, "c": c})
 
 func _process(dt):
+	if title_open:
+		title_elapsed += dt
+		var over_play := TITLE_PLAY.has_point(get_viewport().get_mouse_position())
+		title_hover = move_toward(title_hover, 1.0 if over_play else 0.0, dt * 7.0)
+		queue_redraw()
+		return
 	if phase == "combat": sim(dt)
 	if qte == null:
 		notification_time = maxf(0.0, notification_time - dt)
@@ -1274,7 +1292,7 @@ func draw_unit_stars(center: Vector2, count: int, sz: float = 6.0):
 	for i in count:
 		draw_gold_star(Vector2(start_x + i * spacing, center.y), sz, true)
 
-func draw_fantasy_unit(pos: Vector2, d: Dictionary, team: int = 0, anim_state: String = "idle", anim_t: float = 0.0, attack_t: float = 0.0, facing: float = 1.0):
+func draw_fantasy_unit(pos: Vector2, d: Dictionary, team: int = 0, anim_state: String = "idle", anim_t: float = 0.0, attack_t: float = 0.0, facing: float = 1.0, show_team_ring: bool = true):
 	var f = 1.0 if facing >= 0.0 else -1.0
 	var bob = 0.0
 	var lunge = 0.0
@@ -1297,9 +1315,10 @@ func draw_fantasy_unit(pos: Vector2, d: Dictionary, team: int = 0, anim_state: S
 	var c = pos + Vector2(lunge, bob)
 
 	# Ground shadow & ground team ring
-	draw_arc(pos + Vector2(0, 18), 18, 0, TAU, 24, Color(0, 0, 0, 0.3), 3.0)
-	var team_ring_col = Color("38b000") if team == 0 else Color("d9381e")
-	draw_arc(pos + Vector2(0, 18), 18, 0, TAU, 24, team_ring_col, 2.5)
+	if show_team_ring:
+		draw_arc(pos + Vector2(0, 18), 18, 0, TAU, 24, Color(0, 0, 0, 0.3), 3.0)
+		var team_ring_col = Color("38b000") if team == 0 else Color("d9381e")
+		draw_arc(pos + Vector2(0, 18), 18, 0, TAU, 24, team_ring_col, 2.5)
 
 	match d.n:
 		"Squire":
@@ -1649,6 +1668,109 @@ func draw_forest_tree(base: Vector2, height: float, tint: Color):
 			Vector2(base.x - width * 0.14, y + height * 0.47), Vector2(base.x - width, y + height * 0.41)])
 		draw_colored_polygon(points, tint.lightened(float(2 - layer) * 0.04))
 
+func draw_title_landscape(pan: float):
+	var sky := PackedVector2Array([Vector2.ZERO, Vector2(1280, 0), Vector2(1280, 720), Vector2(0, 720)])
+	draw_polygon(sky, PackedColorArray([Color("253C55"), Color("40516D"), Color("E1B581"), Color("9F806E")]))
+	var sun := Vector2(1030 - pan * 0.08, 172)
+	for i in range(5, 0, -1):
+		draw_circle(sun, 42.0 + i * 11.0, Color("FFCA8D", 0.08), true, -1, true)
+	draw_circle(sun, 40, Color("FFE3A8"), true, -1, true)
+
+	for layer in range(3):
+		var ridge := PackedVector2Array([Vector2(-180, 440)])
+		for i in range(13):
+			var x := -180.0 + i * 145.0 - pan * (0.18 + layer * 0.14)
+			var height := 225.0 + layer * 42.0 + sin(i * 1.83 + layer) * 52.0 + sin(i * 0.67) * 33.0
+			ridge.append(Vector2(x, height))
+		ridge.append(Vector2(1580, 440))
+		var tint := [Color("7B8585"), Color("556F72"), Color("3A5C5D")][layer] as Color
+		draw_colored_polygon(ridge, tint)
+
+	var distant_lake := PackedVector2Array([Vector2(664, 305), Vector2(795, 296), Vector2(979, 298),
+		Vector2(1106, 307), Vector2(989, 314), Vector2(775, 317)])
+	for i in distant_lake.size():
+		distant_lake[i].x -= pan * 0.32
+	draw_colored_polygon(distant_lake, Color("A6ADA0"))
+	draw_polygon(PackedVector2Array([Vector2(0, 348), Vector2(1280, 348), Vector2(1280, 720), Vector2(0, 720)]),
+		PackedColorArray([Color("779E91"), Color("79988E"), Color("23464A"), Color("163A41")]))
+	var distant_shore := PackedVector2Array([Vector2(-175, 337), Vector2(1640, 337)])
+	for i in range(36, -1, -1):
+		var x := -90.0 + i * 47.0 - pan * 0.44
+		var y := 360.0 + sin(i * 0.42) * 12.0 + sin(i * 1.3) * 4.0
+		distant_shore.append(Vector2(x, y + 4.0))
+	draw_colored_polygon(distant_shore, Color("365854"))
+	for i in range(37):
+		var x := -90.0 + i * 47.0 - pan * 0.44
+		var y := 360.0 + sin(i * 0.42) * 12.0 + sin(i * 1.3) * 4.0
+		draw_forest_tree(Vector2(x, y), 33.0 + (i * 53) % 78, Color("294F4B").lightened((i % 5) * 0.024))
+	for i in range(24):
+		var y := 374.0 + i * 12.6
+		var shine := absf(sin(title_elapsed * 0.48 + i * 1.7))
+		var width := 18.0 + (i % 7) * 12.0 + 21.0 * shine
+		var x := sun.x - width / 2.0 + sin(i * 2.4) * (18.0 + i * 2.1)
+		draw_line(Vector2(x, y), Vector2(x + width, y), Color("F6D399", (0.28 - i * 0.006) * shine), 1.0 + i * 0.06, true)
+		var ripple_x := fposmod(i * 277.0 - pan * 0.48, 1400.0) - 60.0
+		draw_line(Vector2(ripple_x, y + 4), Vector2(ripple_x + 55 + i % 3 * 22, y + 4),
+			Color("B2D7C0", shine * 0.18), 1.0, true)
+
+func draw_title_shore(pan: float):
+	draw_set_transform(Vector2(-pan * 0.72, 0))
+	var island := PackedVector2Array([Vector2(720, 541), Vector2(772, 512), Vector2(844, 503),
+		Vector2(882, 465), Vector2(949, 456), Vector2(1034, 469), Vector2(1105, 442), Vector2(1254, 450),
+		Vector2(1475, 421), Vector2(1500, 565), Vector2(1060, 579), Vector2(938, 556), Vector2(816, 564)])
+	draw_colored_polygon(island, Color("233E39"))
+	draw_polyline(island, Color("729079", 0.64), 2.0, true)
+	draw_forest_tree(Vector2(1300, 476), 174, Color("21413D"))
+	draw_forest_tree(Vector2(1192, 489), 133, Color("3C5C47"))
+	draw_forest_tree(Vector2(868, 514), 105, Color("3B6048"))
+	draw_forest_tree(Vector2(829, 519), 68, Color("315746"))
+
+	var camp := Vector2(1036, 514)
+	for i in range(4, 0, -1):
+		draw_circle(camp, i * 10.0, Color("FFB46A", 0.085), true, -1, true)
+	var flames := PackedVector2Array([camp + Vector2(-9, 4), camp + Vector2(-7, -6),
+		camp + Vector2(-1, -17 - sin(title_elapsed * 7.0) * 3.0), camp + Vector2(5, -7), camp + Vector2(9, 4)])
+	draw_colored_polygon(flames, Color("EA9756"))
+	draw_circle(camp + Vector2(0, 1), 4, Color("FFE3AB"), true, -1, true)
+	draw_rect(Rect2(932, 514, 50, 8), Color("896344"))
+	draw_rect(Rect2(1081, 514, 48, 8), Color("896344"))
+	draw_fantasy_unit(Vector2(957, 495), {"n": "Sage"}, 0, "idle", title_elapsed * 0.57, 0.0, 1.0, false)
+	draw_fantasy_unit(Vector2(1105, 495), {"n": "Squire"}, 0, "idle", title_elapsed * 0.61 + 1.0, 0.0, -1.0, false)
+	draw_fantasy_unit(Vector2(1143, 534), {"n": "Archer"}, 0, "idle", title_elapsed * 0.52 + 2.0, 0.0, -1.0, false)
+	draw_set_transform(Vector2.ZERO)
+
+func draw_title_screen():
+	var pan := 74.0 + sin(title_elapsed * 0.105) * 74.0
+	draw_title_landscape(pan)
+	draw_title_shore(pan)
+	draw_set_transform(Vector2(-pan, 0))
+	draw_colored_polygon(PackedVector2Array([Vector2(-100, 628), Vector2(109, 591), Vector2(250, 646),
+		Vector2(381, 698), Vector2(598, 740), Vector2(-100, 740)]), Color("142F31"))
+	draw_forest_tree(Vector2(59, 646), 233, Color("173937"))
+	draw_forest_tree(Vector2(229, 664), 152, Color("1C3E37"))
+	draw_forest_tree(Vector2(1446, 709), 252, Color("1B3735"))
+	draw_set_transform(Vector2.ZERO)
+	for i in range(16):
+		var glow := 0.30 + 0.26 * sin(title_elapsed * 1.5 + i * 2.3)
+		var p := Vector2(630.0 + i * 45.0 - pan * 0.63 + sin(title_elapsed + i) * 9.0,
+			566.0 + sin(i * 2.6 + title_elapsed * 0.52) * 59.0)
+		draw_circle(p, 5, Color("FFE299", glow * 0.28))
+		draw_circle(p, 1.6, Color("FFE299", glow))
+
+	var shade := Color("0D2028", 0.91)
+	var clear := Color("0D2028", 0.0)
+	draw_polygon(PackedVector2Array([Vector2.ZERO, Vector2(756, 0), Vector2(756, 720), Vector2(0, 720)]),
+		PackedColorArray([shade, clear, clear, shade]))
+	draw_rect(Rect2(22, 22, 1236, 676), Color("D8D6A1", 0.30), false, 1.0)
+	draw_line(Vector2(83, 276), Vector2(159, 276), Color("E6BB78"), 2.0, true)
+	T(Vector2(82, 347), "PAPER", 76, Color("FFF1D5"))
+	T(Vector2(82, 424), "TACTICS", 88, Color("FFF1D5"))
+	var hover := smoothstep(0.0, 1.0, title_hover)
+	var play := Rect2(TITLE_PLAY.position + Vector2(0, -3.0 * hover), TITLE_PLAY.size)
+	draw_paper_panel(play, Color("DFB578").lightened(hover * 0.20), Color("F7DC9C"), 5.0)
+	T(play.position + Vector2(20, 35), "Play", 23, INK)
+	T(play.position + Vector2(139, 34), "Enter", 14, Color("573F29"))
+
 func draw_forest_surroundings():
 	var sky := Color("E5E9C7")
 	var ground := Color("B4BE8E")
@@ -1778,6 +1900,9 @@ func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Arra
 		draw_unit_stars(center - Vector2(0, 30), portrait.s, 4.5)
 
 func _draw():
+	if title_open:
+		draw_title_screen()
+		return
 	draw_forest_surroundings()
 	draw_paper_panel(Rect2(12, 32, 230, 251), Color("EFE0C6"), Color(PAPER_EDGE, 0.50))
 	var mp := mouse_pos
