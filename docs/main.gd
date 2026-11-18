@@ -35,8 +35,7 @@ const STARTING_HP := 50
 const LESSON_NEXT := Rect2(734, 98, 114, 30)
 const SKIP_TUTORIAL := Rect2(904, 14, 222, 33)
 const TITLE_PLAY := Rect2(82, 477, 214, 55)
-const TITLE_CAMERA_SPEED := 38.0
-const TITLE_SHORE_SPACING := 760.0
+const TITLE_CAMPFIRE := preload("res://title_campfire.png")
 const TUTORIAL_LINES := [
 	["Buy the highlighted Archer. Shop units go to your bench.",
 		"Hover over a shop card to see the character, stats, and price."],
@@ -224,7 +223,6 @@ const BTNS := ["Reroll (D) 2g", "Lock shop", "Buy XP (F) 4g", "Sell (E)", "START
 
 var gold := STARTING_GOLD
 var title_open := true
-var title_elapsed := 0.0
 var title_hover := 0.0
 var tutorial_step := Tutorial.BUY
 var practice_round := 1
@@ -975,7 +973,6 @@ func pop(p, s, c):
 
 func _process(dt):
 	if title_open:
-		title_elapsed += dt
 		var over_play := TITLE_PLAY.has_point(get_viewport().get_mouse_position())
 		title_hover = move_toward(title_hover, 1.0 if over_play else 0.0, dt * 7.0)
 		queue_redraw()
@@ -1670,131 +1667,14 @@ func draw_forest_tree(base: Vector2, height: float, tint: Color):
 			Vector2(base.x - width * 0.14, y + height * 0.47), Vector2(base.x - width, y + height * 0.41)])
 		draw_colored_polygon(points, tint.lightened(float(2 - layer) * 0.04))
 
-func draw_title_landscape(pan: float):
-	var sky := PackedVector2Array([Vector2.ZERO, Vector2(1280, 0), Vector2(1280, 720), Vector2(0, 720)])
-	draw_polygon(sky, PackedColorArray([Color("253C55"), Color("40516D"), Color("E1B581"), Color("9F806E")]))
-	var sun := Vector2(1030, 172)
-	for i in range(5, 0, -1):
-		draw_circle(sun, 42.0 + i * 11.0, Color("FFCA8D", 0.08), true, -1, true)
-	draw_circle(sun, 40, Color("FFE3A8"), true, -1, true)
-
-	for layer in range(3):
-		var offset := pan * (0.18 + layer * 0.14)
-		var first := floori(offset / 145.0) - 1
-		var ridge := PackedVector2Array([Vector2(first * 145.0 - offset, 440)])
-		for i in range(first, first + 13):
-			var x := i * 145.0 - offset
-			var height := 225.0 + layer * 42.0 + sin(i * 1.83 + layer) * 52.0 + sin(i * 0.67) * 33.0
-			ridge.append(Vector2(x, height))
-		ridge.append(Vector2(ridge[-1].x, 440))
-		var tint := [Color("7B8585"), Color("556F72"), Color("3A5C5D")][layer] as Color
-		draw_colored_polygon(ridge, tint)
-
-	for repeat in range(-1, 2):
-		var lake_x := 664.0 + repeat * 1450.0 - fposmod(pan * 0.32, 1450.0)
-		draw_colored_polygon(PackedVector2Array([Vector2(lake_x, 305), Vector2(lake_x + 131, 296),
-			Vector2(lake_x + 315, 298), Vector2(lake_x + 442, 307),
-			Vector2(lake_x + 325, 314), Vector2(lake_x + 111, 317)]), Color("A6ADA0"))
-	draw_polygon(PackedVector2Array([Vector2(0, 348), Vector2(1280, 348), Vector2(1280, 720), Vector2(0, 720)]),
-		PackedColorArray([Color("779E91"), Color("79988E"), Color("23464A"), Color("163A41")]))
-	var tree_offset := pan * 0.44
-	var first_tree := floori(tree_offset / 47.0) - 2
-	var last_tree := first_tree + 32
-	var distant_shore := PackedVector2Array([Vector2(first_tree * 47.0 - tree_offset, 337),
-		Vector2(last_tree * 47.0 - tree_offset, 337)])
-	for i in range(last_tree, first_tree - 1, -1):
-		var x := i * 47.0 - tree_offset
-		var y := 360.0 + sin(i * 0.42) * 12.0 + sin(i * 1.3) * 4.0
-		distant_shore.append(Vector2(x, y + 4.0))
-	draw_colored_polygon(distant_shore, Color("365854"))
-	for i in range(first_tree, last_tree + 1):
-		var x := i * 47.0 - tree_offset
-		var y := 360.0 + sin(i * 0.42) * 12.0 + sin(i * 1.3) * 4.0
-		draw_forest_tree(Vector2(x, y), 33.0 + posmod(i * 53, 78), Color("294F4B").lightened(posmod(i, 5) * 0.024))
-	for i in range(24):
-		var y := 374.0 + i * 12.6
-		var shine := absf(sin(title_elapsed * 0.48 + i * 1.7))
-		var width := 18.0 + (i % 7) * 12.0 + 21.0 * shine
-		var x := sun.x - width / 2.0 + sin(i * 2.4) * (18.0 + i * 2.1)
-		draw_line(Vector2(x, y), Vector2(x + width, y), Color("F6D399", (0.28 - i * 0.006) * shine), 1.0 + i * 0.06, true)
-		var ripple_x := fposmod(i * 277.0 - pan * 0.48, 1400.0) - 60.0
-		draw_line(Vector2(ripple_x, y + 4), Vector2(ripple_x + 55 + i % 3 * 22, y + 4),
-			Color("B2D7C0", shine * 0.18), 1.0, true)
-
-func draw_title_shore(offset: float, section: int):
-	draw_set_transform(Vector2(offset, 0))
-	var island := PackedVector2Array([Vector2(720, 541), Vector2(772, 512), Vector2(844, 503),
-		Vector2(882, 465), Vector2(949, 456), Vector2(1034, 469), Vector2(1105, 442), Vector2(1254, 450),
-		Vector2(1383, 465), Vector2(1452, 505), Vector2(1399, 537), Vector2(1060, 579),
-		Vector2(938, 556), Vector2(816, 564)])
-	draw_colored_polygon(island, Color("233E39"))
-	draw_polyline(island, Color("729079", 0.64), 2.0, true)
-	draw_forest_tree(Vector2(1300, 476), 174, Color("21413D"))
-	draw_forest_tree(Vector2(1192, 489), 133, Color("3C5C47"))
-	draw_forest_tree(Vector2(868, 514), 105, Color("3B6048"))
-	draw_forest_tree(Vector2(829, 519), 68, Color("315746"))
-
-	draw_title_duel(section)
-	draw_set_transform(Vector2.ZERO)
-
-func draw_title_duel(section: int):
-	var beat := fposmod(title_elapsed + section * 0.77 + 0.55, 2.8)
-	var closing := smoothstep(0.0, 0.70, beat) * (1.0 - smoothstep(1.95, 2.75, beat))
-	var left := Vector2(988 + closing * 29.0, 503)
-	var right := Vector2(1090 - closing * 32.0, 503)
-	var left_attack := clampf(1.10 - beat, 0.0, 0.35)
-	var right_attack := clampf(1.88 - beat, 0.0, 0.35)
-	var advancing := beat < 0.70 or beat >= 1.95
-	var stance := "move" if advancing else "idle"
-	var left_style := "attack" if beat >= 0.75 and left_attack > 0.0 else stance
-	var right_style := "attack" if beat >= 1.53 and right_attack > 0.0 else stance
-	var first := "Knight" if posmod(section, 2) == 0 else "Rogue"
-	var second := "Mage" if posmod(section, 2) == 0 else "Witch"
-	draw_fantasy_unit(left, {"n": first}, 0, left_style, title_elapsed * 2.0, left_attack, 1.0, false)
-	draw_fantasy_unit(right, {"n": second}, 1, right_style, title_elapsed * 2.0, right_attack, -1.0, false)
-	var hit := beat - 0.93 if beat < 1.50 else beat - 1.71
-	if hit >= 0.0 and hit < 0.23:
-		var origin := (left + right) * 0.5 - Vector2(0, 9)
-		var color := Color("FFE3A8") if beat < 1.50 else Color("CCA7FF")
-		color.a = 1.0 - hit / 0.23
-		for i in range(7):
-			var direction := Vector2.from_angle(i * TAU / 7.0)
-			draw_line(origin + direction * hit * 47.0, origin + direction * (7.0 + hit * 66.0), color, 2.0, true)
-
 func draw_title_screen():
-	var pan := title_elapsed * TITLE_CAMERA_SPEED
-	draw_title_landscape(pan)
-	var shore_pan := pan * 0.72
-	var shore_section := floori(shore_pan / TITLE_SHORE_SPACING)
-	for repeat in range(-1, 2):
-		var offset := repeat * TITLE_SHORE_SPACING - fposmod(shore_pan, TITLE_SHORE_SPACING)
-		if offset + 1452.0 > 0.0 and offset + 720.0 < 1280.0:
-			draw_title_shore(offset, shore_section + repeat)
-	for repeat in range(-1, 2):
-		draw_set_transform(Vector2(repeat * 1440.0 - fposmod(pan, 1440.0), 0))
-		draw_colored_polygon(PackedVector2Array([Vector2(-100, 628), Vector2(109, 591), Vector2(250, 646),
-			Vector2(381, 698), Vector2(598, 740), Vector2(-100, 740)]), Color("142F31"))
-		draw_forest_tree(Vector2(59, 646), 233, Color("173937"))
-		draw_forest_tree(Vector2(229, 664), 152, Color("1C3E37"))
-		draw_forest_tree(Vector2(1320, 718), 182, Color("1B3735"))
-	draw_set_transform(Vector2.ZERO)
-	for i in range(16):
-		var glow := 0.30 + 0.26 * sin(title_elapsed * 1.5 + i * 2.3)
-		var p := Vector2(fposmod(630.0 + i * 79.0 - pan * 0.63, 1380.0) - 50.0 + sin(title_elapsed + i) * 9.0,
-			566.0 + sin(i * 2.6 + title_elapsed * 0.52) * 59.0)
-		draw_circle(p, 5, Color("FFE299", glow * 0.28))
-		draw_circle(p, 1.6, Color("FFE299", glow))
-
-	var shade := Color("0D2028", 0.91)
-	var clear := Color("0D2028", 0.0)
-	draw_polygon(PackedVector2Array([Vector2.ZERO, Vector2(756, 0), Vector2(756, 720), Vector2(0, 720)]),
-		PackedColorArray([shade, clear, clear, shade]))
+	draw_texture_rect(TITLE_CAMPFIRE, Rect2(0, 0, 1280, 720), false)
 	draw_rect(Rect2(22, 22, 1236, 676), Color("D8D6A1", 0.30), false, 1.0)
 	draw_line(Vector2(83, 276), Vector2(159, 276), Color("E6BB78"), 2.0, true)
 	T(Vector2(82, 347), "PAPER", 76, Color("FFF1D5"))
 	T(Vector2(82, 424), "TACTICS", 88, Color("FFF1D5"))
 	var hover := smoothstep(0.0, 1.0, title_hover)
-	var play := Rect2(TITLE_PLAY.position + Vector2(0, -3.0 * hover), TITLE_PLAY.size)
+	var play := TITLE_PLAY
 	draw_paper_panel(play, Color("DFB578").lightened(hover * 0.20), Color("F7DC9C"), 5.0)
 	T(play.position + Vector2(20, 35), "Play", 23, INK)
 	T(play.position + Vector2(139, 34), "Enter", 14, Color("573F29"))
