@@ -69,6 +69,9 @@ const LESSONS := [
 		"Your practice purchases and upgrades will reset when training ends."]
 ]
 const LOOT_WARNING_TIME := 0.9
+const QTE_DURATION := 0.75
+const QTE_GOLD_START := 0.275
+const QTE_GOLD_END := 0.475
 const MERGE_BUTTON := Rect2(900, 490, 230, 32)
 const MERGE_SELECT_PANEL := Rect2(430, 144, 420, 80)
 const MERGE_CONFIRM_PANEL := Rect2(430, 298, 420, 124)
@@ -1040,7 +1043,7 @@ func sim(dt):
 
 	if qte != null:
 		qte.t += dt * (0.4 if tutorial_step == Tutorial.FIGHT else 1.0)
-		if qte.t > 0.75: resolve_qte(0.0, "")
+		if qte.t > QTE_DURATION: resolve_qte(0.0, "")
 
 	for u in units:
 		if u.hp <= 0: continue
@@ -1171,8 +1174,11 @@ func apply_cast(u, tgt, bonus):
 
 func qte_press():
 	if qte == null: return
-	if qte.t >= 0.275 and qte.t <= 0.475: resolve_qte(0.3, "PERFECT!")
+	if qte_in_gold(qte.t): resolve_qte(0.3, "PERFECT!")
 	else: resolve_qte(0.15, "Good")
+
+func qte_in_gold(time: float) -> bool:
+	return time >= QTE_GOLD_START and time <= QTE_GOLD_END
 
 func resolve_qte(bonus, label):
 	var u = qte.u
@@ -1583,6 +1589,41 @@ func draw_guide():
 	for i in lines.size():
 		T(bubble.position + Vector2(9, 16 + 17 * i), lines[i], 12)
 
+func draw_spell_qte():
+	var panel := Rect2(392, 146, 496, 119)
+	var track := Rect2(416, 200, 448, 30)
+	var key := Rect2(416, 158, 82, 26)
+	var in_gold := qte_in_gold(qte.t)
+	var accent := Color("FFE09A") if in_gold else GOLD
+	var gold_left := track.position.x + track.size.x * QTE_GOLD_START / QTE_DURATION
+	var gold_right := track.position.x + track.size.x * QTE_GOLD_END / QTE_DURATION
+	var marker_x := track.position.x + track.size.x * clampf(qte.t / QTE_DURATION, 0.0, 1.0)
+	var gold_zone := Rect2(gold_left, track.position.y, gold_right - gold_left, track.size.y)
+
+	draw_paper_panel(panel, Color("302338"), accent, 6.0)
+	draw_paper_panel(key, accent if in_gold else Color("F5E8D4"), Color("917092"), 3.0)
+	T(key.position + Vector2(0, 18), "SPACE", 14, INK, key.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	T(Vector2(512, 177), "Press when the marker reaches gold", 16, PAPER_HIGHLIGHT)
+
+	draw_rect(track.grow(2), Color("76647C"))
+	draw_rect(track, Color("19131F"))
+	draw_rect(Rect2(track.position, Vector2(marker_x - track.position.x, track.size.y)), Color("51405F"))
+	draw_rect(gold_zone, accent)
+	for x in range(1, 8):
+		var tick_x := track.position.x + track.size.x * x / 8.0
+		var tick_color := Color(INK, 0.32) if tick_x >= gold_left and tick_x <= gold_right else Color(PAPER_HIGHLIGHT, 0.35)
+		draw_line(Vector2(tick_x, track.end.y - 6), Vector2(tick_x, track.end.y), tick_color, 1.0, true)
+	draw_rect(gold_zone, PAPER_HIGHLIGHT, false, 1.0)
+
+	var marker_center := Vector2(marker_x, track.get_center().y)
+	draw_line(marker_center - Vector2(0, 20), marker_center + Vector2(0, 20), INK, 6.0, true)
+	draw_line(marker_center - Vector2(0, 19), marker_center + Vector2(0, 19), Color.WHITE, 2.0, true)
+	var diamond := PackedVector2Array([Vector2(marker_x, 190), Vector2(marker_x + 6, 196),
+		Vector2(marker_x, 202), Vector2(marker_x - 6, 196)])
+	draw_colored_polygon(diamond, Color.WHITE)
+	T(Vector2(gold_left - 20, 252), "PRESS NOW" if in_gold else "PERFECT WINDOW",
+		13, accent, gold_zone.size.x + 40, HORIZONTAL_ALIGNMENT_CENTER)
+
 func unit_footprint(cell: Vector2, unit: Dictionary) -> Rect2:
 	return Rect2(BO + cell * CELL, Vector2(unit_width(unit) * CELL, CELL))
 
@@ -1881,11 +1922,7 @@ func _draw():
 
 	# QTE
 	if qte != null:
-		var bx = BO.x
-		draw_rect(Rect2(bx, 190, 448, 60), INK)
-		draw_rect(Rect2(bx + 448 * 0.275 / 0.75, 190, 448 * 0.2 / 0.75, 60), GOLD)
-		draw_rect(Rect2(bx + 448 * qte.t / 0.75 - 3, 186, 6, 68), RED)
-		T(Vector2(bx, 182), "SPACE!  (hit the gold zone)", 22, RED, 448, HORIZONTAL_ALIGNMENT_CENTER)
+		draw_spell_qte()
 
 	if phase == "over":
 		draw_rect(Rect2(0, 0, 1280, 720), Color(PARCH, 0.9))
@@ -1901,6 +1938,9 @@ func _draw():
 		var pulse := 0.70 + 0.30 * sin(Time.get_ticks_msec() / 135.0)
 		draw_rect(target.grow(3.0), Color("905313"), false, 5.0)
 		draw_rect(target.grow(3.0), Color(GOLD, pulse), false, 3.0)
+
+	if qte != null:
+		return
 
 	# Tooltips & Hover cards (renders on top of everything)
 	var tip = null
