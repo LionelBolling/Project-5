@@ -19,6 +19,11 @@ const GUIDE_BUBBLE := Rect2(69, 317, 173, 58)
 const GUIDE_MODEL := Rect2(17, 317, 45, 58)
 const GUIDE_LINE := "Click a unit, then click a slot to move or swap it. Use the bottom three rows."
 const LOOT_WARNING_TIME := 0.9
+const MERGE_BUTTON := Rect2(900, 490, 230, 32)
+const MERGE_SELECT_PANEL := Rect2(430, 144, 420, 80)
+const MERGE_CONFIRM_PANEL := Rect2(430, 298, 420, 124)
+const MERGE_ACCEPT := Rect2(454, 376, 174, 32)
+const MERGE_CANCEL := Rect2(652, 376, 174, 32)
 const TIER_COL := [Color("8a7a5c"), Color("E69A2B"), Color("893BFF"), Color("D9381E"), Color("1A1617")]
 const DEFS := [["Squire",1,false],["Archer",1,true],["Knight",2,false],["Mage",2,true],
 	["Rogue",3,false],["Cleric",3,true],["Golem",4,false],["Witch",4,true],["Dragon",5,false],["Sage",5,true]]
@@ -180,6 +185,9 @@ var board := {}
 var sel = null
 var units := []
 var enemy_formation := []
+var selecting_merge := false
+var merge_locs := []
+var merge_hint := ""
 var texts := []
 var ctime := 0.0
 var qte = null
@@ -226,6 +234,9 @@ func _ready():
 	randomize()
 	hover_amounts[GUIDE_MODEL] = 0.0
 	hover_amounts[GUIDE_BUBBLE] = 0.0
+	hover_amounts[MERGE_BUTTON] = 0.0
+	hover_amounts[MERGE_ACCEPT] = 0.0
+	hover_amounts[MERGE_CANCEL] = 0.0
 	for i in 8:
 		bench.append(null)
 		hover_amounts[bench_rect(i)] = 0.0
@@ -381,12 +392,13 @@ func roll_shop():
 		var p = pool.pick_random()
 		shop.append({"n": p[0], "t": p[1], "r": p[2], "s": 1, "it": []})
 
-func start_prep():
+func start_prep(advance: bool):
 	if not locked:
 		roll_shop()
 		roll_item_shop()
 	locked = false
-	roll_enemy_formation()
+	if advance:
+		roll_enemy_formation()
 
 func loc_get(l):
 	if l[0] == "b": return bench[l[1]]
@@ -397,38 +409,48 @@ func loc_set(l, u):
 	elif u == null: board.erase(l[1])
 	else: board[l[1]] = u
 
-func all_locs():
-	var a = []
-	for i in 8: a.append(["b", i])
-	for k in board.keys(): a.append(["g", k])
-	return a
+func set_merge_selection(active: bool):
+	selecting_merge = active
+	merge_locs.clear()
+	merge_hint = ""
+	if active:
+		sel = null
+		sel_item = -1
 
-func merge():
-	var changed = true
-	while changed:
-		changed = false
-		var groups = {}
-		for l in all_locs():
-			var u = loc_get(l)
-			if u == null or u.s >= 3: continue
-			var key = u.n + str(u.s)
-			if not groups.has(key): groups[key] = []
-			groups[key].append(l)
-		for key in groups:
-			var ls = groups[key]
-			if ls.size() >= 3:
-				loc_get(ls[0]).s += 1
-				for j in [1, 2]:
-					for itn in loc_get(ls[j]).get("it", []):
-						if items_inv.size() < 8:
-							items_inv.append(itn)
-						else:
-							gold += 3
-					loc_set(ls[j], null)
-				sel = null
-				msg = "Star up!"
-				changed = true
-				break
+func select_merge_unit(loc: Array):
+	var unit = loc_get(loc)
+	if unit == null:
+		return
+	if merge_locs.has(loc):
+		merge_locs.erase(loc)
+	elif unit.s >= 3:
+		merge_hint = "That unit is already at three stars."
+		return
+	elif not merge_locs.is_empty():
+		var first = loc_get(merge_locs[0])
+		if unit.n != first.n or unit.s != first.s:
+			merge_hint = "Choose units of the same type and star level."
+			return
+		merge_locs.append(loc)
+	else:
+		merge_locs.append(loc)
+	merge_hint = ""
+
+func confirm_merge():
+	if merge_locs.size() != 3:
+		return
+	var survivor = loc_get(merge_locs[0])
+	survivor.s += 1
+	for i in range(1, 3):
+		var loc = merge_locs[i]
+		for item in loc_get(loc).get("it", []):
+			if items_inv.size() < 8:
+				items_inv.append(item)
+			else:
+				gold += 3
+		loc_set(loc, null)
+	set_merge_selection(false)
+	msg = "%s upgraded to %d stars!" % [survivor.n, survivor.s]
 
 func sell_value(u): return u.t * int(pow(3, u.s - 1)) - (1 if u.s > 1 else 0)
 
@@ -445,6 +467,12 @@ func _input(e):
 					break
 		click(e.position)
 	elif e is InputEventKey and e.pressed and not e.echo:
+		if selecting_merge:
+			if e.keycode == KEY_ESCAPE:
+				set_merge_selection(false)
+			elif e.keycode == KEY_ENTER:
+				confirm_merge()
+			return
 		match e.keycode:
 			KEY_SPACE: qte_press()
 			KEY_D: do_btn(0)
@@ -457,6 +485,25 @@ func click(p):
 		get_tree().reload_current_scene()
 		return
 	if phase != "prep": return
+	if MERGE_BUTTON.has_point(p):
+		animate_press(MERGE_BUTTON)
+		set_merge_selection(not selecting_merge)
+		return
+	if selecting_merge:
+		if merge_locs.size() == 3:
+			if MERGE_ACCEPT.has_point(p):
+				confirm_merge()
+			elif MERGE_CANCEL.has_point(p):
+				set_merge_selection(false)
+			return
+		for i in 8:
+			if bench_rect(i).has_point(p):
+				select_merge_unit(["b", i])
+				return
+		var cell := Vector2i(((Vector2(p) - BO) / CELL).floor())
+		if cell.x >= 0 and cell.x < COLS and cell.y >= 3 and cell.y < ROWS:
+			select_merge_unit(["g", cell])
+		return
 	if GUIDE_MODEL.has_point(p) or GUIDE_BUBBLE.has_point(p):
 		msg = GUIDE_LINE
 		return
@@ -576,7 +623,6 @@ func buy(i):
 	gold -= c.t
 	bench[idx] = c.duplicate()
 	shop[i] = null
-	merge()
 
 func do_btn(i):
 	if phase != "prep": return
@@ -927,23 +973,27 @@ func end_combat(a0, a1):
 		hp -= dmg
 		res += " (-%d HP)" % dmg
 	msg = "%s. +%d gold (5 base, %d interest, %d streak)." % [res, inc, interest, sb]
-	if cur_pve and win:
+	if win:
 		for e in units:
 			if e.team == 1 and orbs.size() < 3: orbs.append(e.pos)
 		if not orbs.is_empty():
 			loot_warning_time = LOOT_WARNING_TIME
 			msg += " Gold orbs incoming. Click to collect."
+	if cur_pve and win:
 		if items_inv.size() < 8:
 			var drop = ITEM_DB.keys().pick_random()
 			var drop_tier = 2 if (stage >= 7 and randf() < 0.25) else 1
 			items_inv.append({"n": drop, "t": drop_tier})
 			msg += " Found %s %s!" % [drop, "*".repeat(drop_tier)]
-	stage += 1
+	if win:
+		stage += 1
+	else:
+		msg += " Retry stage %d." % stage
 	if hp <= 0: phase = "over"
 	elif stage > 10: phase = "over"
 	else:
 		phase = "prep"
-		start_prep()
+		start_prep(win)
 
 # ---------- drawing ----------
 func T(p, s, size = 16, col = INK, w = -1.0, al = HORIZONTAL_ALIGNMENT_LEFT):
@@ -1168,7 +1218,7 @@ func token(c, d, team = 0, anim_state = "idle", anim_t = 0.0, attack_t = 0.0, fa
 			draw_rect(Rect2(px, c.y + 24, pip_sz, pip_sz), col)
 			draw_rect(Rect2(px, c.y + 24, pip_sz, pip_sz), INK, false, 1.0)
 
-func get_unit_hover_info(u, is_combat: bool = false, is_enemy: bool = false) -> Dictionary:
+func get_unit_hover_info(u, is_combat: bool = false, show_sell_value: bool = true) -> Dictionary:
 	var d = u.d if is_combat else u
 	var st = stats(d)
 	var title = "%s  (Tier %d %s)" % [d.n, d.t, "Ranged" if d.r else "Melee"]
@@ -1194,7 +1244,7 @@ func get_unit_hover_info(u, is_combat: bool = false, is_enemy: bool = false) -> 
 			var col = RARITY_COLS.get(rar, GOLD)
 			lines.append({"t": " • %s %s: %s" % [iname, "*".repeat(itier), get_it_desc(iname, itier)], "c": col})
 
-	if not is_combat and not is_enemy:
+	if not is_combat and show_sell_value:
 		lines.append({"t": "Sell Value: %d Gold" % sell_value(d), "c": Color("e69a2b")})
 
 	return {"title": title, "col": TIER_COL[clampi(d.t - 1, 0, 4)], "lines": lines}
@@ -1222,7 +1272,22 @@ func button(bounds: Rect2, label: String, col: Color):
 	var hover := hover_strength(bounds)
 	var r := animated_rect(bounds, 3.0)
 	draw_paper_panel(r, col.lightened(hover * 0.22).darkened(press_strength(bounds) * 0.14), PAPER_EDGE.lerp(INK, hover), 4.0 + hover * 2.0)
-	T(r.position + Vector2(0, 29), label, 17, INK, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	T(r.position + Vector2(0, r.size.y / 2.0 + 6), label, 17, INK, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+
+func draw_merge_prompt():
+	if merge_locs.size() == 3:
+		draw_rect(get_viewport_rect(), Color(INK, 0.38))
+		var first = loc_get(merge_locs[0])
+		draw_paper_panel(MERGE_CONFIRM_PANEL, PAPER_HIGHLIGHT, PAPER_EDGE, 5.0)
+		T(MERGE_CONFIRM_PANEL.position + Vector2(0, 30), "Merge three %s units?" % first.n, 22, INK, 420, HORIZONTAL_ALIGNMENT_CENTER)
+		T(MERGE_CONFIRM_PANEL.position + Vector2(0, 56), "The first unit stays and gains a star.", 15, INK, 420, HORIZONTAL_ALIGNMENT_CENTER)
+		button(MERGE_ACCEPT, "Confirm merge", GOLD.lightened(0.3))
+		button(MERGE_CANCEL, "Cancel", KRAFT)
+	else:
+		draw_paper_panel(MERGE_SELECT_PANEL, PAPER_HIGHLIGHT, PAPER_EDGE, 5.0)
+		T(MERGE_SELECT_PANEL.position + Vector2(0, 30), "Select the units (%d/3)" % merge_locs.size(), 22, INK, 420, HORIZONTAL_ALIGNMENT_CENTER)
+		var hint := merge_hint if not merge_hint.is_empty() else "Choose three units of the same type and star level."
+		T(MERGE_SELECT_PANEL.position + Vector2(0, 58), hint, 15, INK, 420, HORIZONTAL_ALIGNMENT_CENTER)
 
 func draw_notification():
 	if notification_time <= 0.0 or phase == "over":
@@ -1297,7 +1362,7 @@ func get_equip_preview(u, s_name: String, s_tier: int) -> Dictionary:
 
 	return {"title": title, "col": GOLD, "lines": lines}
 
-func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Array):
+func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Array, portrait = null):
 	var pad := 10.0
 	var font = ThemeDB.fallback_font
 	var title_sz := 15
@@ -1310,6 +1375,8 @@ func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Arra
 		if sz > max_w: max_w = sz
 	var box_w = maxf(240.0, max_w + pad * 2.0 + 12.0)
 	var box_h = pad * 2.0 + 18.0 + lines.size() * 18.0 + 8.0
+	if portrait != null:
+		box_w += 87.0
 
 	var bx = pos.x + 16.0
 	var by = pos.y + 16.0
@@ -1318,7 +1385,7 @@ func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Arra
 	if bx < 10.0: bx = 10.0
 	if by < 10.0: by = 10.0
 
-	var r = Rect2(bx, by, box_w, box_h)
+	var r := Rect2(bx, by, box_w, box_h)
 	draw_rect(Rect2(r.position + Vector2(4, 5), r.size), Color(0, 0, 0, 0.45))
 	draw_rect(r, Color("141112"))
 	draw_rect(r, title_col, false, 2)
@@ -1331,6 +1398,11 @@ func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Arra
 		var col = l.get("c", PARCH) if l is Dictionary else PARCH
 		T(r.position + Vector2(pad, y_off), txt, line_sz, col)
 		y_off += 18.0
+	if portrait != null:
+		var center := r.position + Vector2(box_w - 48.0, box_h * 0.5 + 12.0)
+		draw_circle(center, 32, Color(title_col, 0.22))
+		draw_fantasy_unit(center, portrait, 0, "idle", Time.get_ticks_msec() / 1000.0)
+		draw_unit_stars(center - Vector2(0, 30), portrait.s, 4.5)
 
 func _draw():
 	var top_paper := PARCH.lerp(PAPER_HIGHLIGHT, 0.32)
@@ -1351,6 +1423,8 @@ func _draw():
 			var hover := hover_strength(r)
 			draw_rect(r, base.lerp(PAPER_HIGHLIGHT, hover * 0.52).darkened(press_strength(r) * 0.14))
 			draw_rect(r, PAPER_EDGE.lerp(PURPLE, hover * 0.55), false, 1.0)
+			if merge_locs.has(["g", Vector2i(x, y)]):
+				draw_rect(r.grow(-2), PURPLE, false, 3.0)
 
 	if sel != null and sel[0] == "g":
 		draw_rect(Rect2(BO + Vector2(sel[1]) * CELL, Vector2(CELL, CELL)), PURPLE, false, 4)
@@ -1360,7 +1434,7 @@ func _draw():
 		var bounds = bench_rect(i)
 		var hover := hover_strength(bounds)
 		var r := animated_rect(bounds, 2.0)
-		var selected = sel != null and sel[0] == "b" and sel[1] == i
+		var selected = merge_locs.has(["b", i]) or (sel != null and sel[0] == "b" and sel[1] == i)
 		draw_paper_panel(r, KRAFT.lerp(PAPER_HIGHLIGHT, hover * 0.62), PURPLE if selected else PAPER_EDGE)
 		if selected:
 			draw_rect(r.grow(-2), PURPLE, false, 2)
@@ -1439,6 +1513,8 @@ func _draw():
 	# Buttons
 	for i in 5:
 		button(btn_rect(i), BTNS[i] + (" [ON]" if i == 1 and locked else ""), PURPLE.lightened(0.4) if i == 4 else GOLD.lightened(0.3))
+	if phase == "prep":
+		button(MERGE_BUTTON, "Cancel merge" if selecting_merge else "Merge: Select the units", PURPLE.lightened(0.48))
 
 	# HUD
 	var hud = ["STAGE %d / 10" % stage, "HP: %d" % hp, "Gold: %d  (interest +%d)" % [gold, mini(gold / 10, 5)],
@@ -1543,6 +1619,19 @@ func _draw():
 
 	# Tooltips & Hover cards (renders on top of everything)
 	var tip = null
+	if selecting_merge:
+		draw_merge_prompt()
+		return
+
+	if phase == "prep":
+		for i in shop.size():
+			if card_rect(i).has_point(mp) and shop[i] != null:
+				var offer = shop[i]
+				tip = get_unit_hover_info(offer, false, false)
+				tip.col = TIER_COL[offer.t - 1].lightened(0.47)
+				tip.lines.append({"t": "Cost: %d gold" % offer.t, "c": GOLD})
+				tip.portrait = offer
+				break
 
 	if phase == "prep" and sel_item >= 0 and sel_item < items_inv.size():
 		var s_it = items_inv[sel_item]
@@ -1606,7 +1695,7 @@ func _draw():
 		for enemy in enemy_formation:
 			var enemy_tile := Rect2(BO + enemy.pos * CELL, Vector2(CELL, CELL))
 			if enemy_tile.has_point(mp):
-				tip = get_unit_hover_info(enemy.d, false, true)
+				tip = get_unit_hover_info(enemy.d, false, false)
 				break
 
 	# Unit detail hover card (when no item is actively selected)
@@ -1652,6 +1741,6 @@ func _draw():
 				break
 
 	if tip != null:
-		draw_tooltip_box(mp, tip.title, tip.col, tip.lines)
+		draw_tooltip_box(mp, tip.title, tip.col, tip.lines, tip.get("portrait"))
 	if qte == null:
 		draw_notification()
