@@ -12,6 +12,9 @@ const INK := Color("1A1617")
 const PURPLE := Color("893BFF")
 const GOLD := Color("E69A2B")
 const RED := Color("D9381E")
+const PAPER_HIGHLIGHT := Color("FFF2DA")
+const PAPER_EDGE := Color("967550")
+const TOAST_DURATION := 3.6
 const TIER_COL := [Color("8a7a5c"), Color("E69A2B"), Color("893BFF"), Color("D9381E"), Color("1A1617")]
 const DEFS := [["Squire",1,false],["Archer",1,true],["Knight",2,false],["Mage",2,true],
 	["Rogue",3,false],["Cleric",3,true],["Golem",4,false],["Witch",4,true],["Dragon",5,false],["Sage",5,true]]
@@ -161,7 +164,11 @@ var stage := 1
 var streak := 0
 var phase := "prep"
 var locked := false
-var msg := "Buy units, place them on the bottom 3 rows, then start the battle."
+var notification_time := TOAST_DURATION
+var msg := "Buy units, place them on the bottom 3 rows, then start the battle.":
+	set(value):
+		msg = value
+		notification_time = TOAST_DURATION
 var shop := []
 var item_shop := []
 var bench := []
@@ -178,6 +185,9 @@ var cur_pve := false
 var aura_timer := 0.0
 var mouse_pos := Vector2.ZERO
 var projectiles := []
+var hover_amounts := {}
+var pressed_rect := Rect2()
+var press_time := 0.0
 
 func spawn_projectile(from_pos: Vector2, to_pos: Vector2, u_name: String):
 	var p_type = "arrow"
@@ -208,9 +218,20 @@ func spawn_projectile(from_pos: Vector2, to_pos: Vector2, u_name: String):
 
 func _ready():
 	randomize()
-	for i in 8: bench.append(null)
+	for i in 8:
+		bench.append(null)
+		hover_amounts[bench_rect(i)] = 0.0
+		hover_amounts[item_slot_rect(i)] = 0.0
+	for i in 5:
+		hover_amounts[card_rect(i)] = 0.0
+		hover_amounts[btn_rect(i)] = 0.0
+	for y in range(3, ROWS):
+		for x in COLS:
+			hover_amounts[Rect2(BO + Vector2(x, y) * CELL, Vector2(CELL, CELL))] = 0.0
 	roll_shop()
 	roll_item_shop()
+	for i in item_shop.size():
+		hover_amounts[item_btn_rect(i)] = 0.0
 
 # ---------- item & stat helpers ----------
 func get_it_name(it):
@@ -407,6 +428,11 @@ func _input(e):
 		mouse_pos = e.position
 	elif e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
 		mouse_pos = e.position
+		if phase == "prep":
+			for rect in hover_amounts:
+				if rect.has_point(mouse_pos):
+					animate_press(rect)
+					break
 		click(e.position)
 	elif e is InputEventKey and e.pressed and not e.echo:
 		match e.keycode:
@@ -539,6 +565,7 @@ func buy(i):
 
 func do_btn(i):
 	if phase != "prep": return
+	animate_press(btn_rect(i))
 	match i:
 		0:
 			if gold >= 2:
@@ -632,6 +659,14 @@ func pop(p, s, c):
 
 func _process(dt):
 	if phase == "combat": sim(dt)
+	if qte == null:
+		notification_time = maxf(0.0, notification_time - dt)
+	press_time = maxf(0.0, press_time - dt)
+	mouse_pos = get_viewport().get_mouse_position()
+	var can_hover = phase == "prep" and get_viewport().get_visible_rect().has_point(mouse_pos)
+	for rect in hover_amounts:
+		var target := 1.0 if can_hover and rect.has_point(mouse_pos) else 0.0
+		hover_amounts[rect] = move_toward(hover_amounts[rect], target, dt * 7.0)
 	for t in texts: t.t -= dt
 	texts = texts.filter(func(t): return t.t > 0)
 	for p in projectiles: p.t += dt
@@ -1136,11 +1171,47 @@ func get_unit_hover_info(u, is_combat: bool = false) -> Dictionary:
 
 	return {"title": title, "col": TIER_COL[clampi(d.t - 1, 0, 4)], "lines": lines}
 
-func button(r, label, col):
-	draw_rect(Rect2(r.position + Vector2(3, 4), r.size), Color(0, 0, 0, 0.3))
-	draw_rect(r, col)
-	draw_rect(r, INK, false, 2)
+func animate_press(rect: Rect2):
+	pressed_rect = rect
+	press_time = 0.18
+
+func hover_strength(rect: Rect2) -> float:
+	return smoothstep(0.0, 1.0, hover_amounts.get(rect, 0.0))
+
+func press_strength(rect: Rect2) -> float:
+	return smoothstep(0.0, 1.0, press_time / 0.18) if rect == pressed_rect else 0.0
+
+func animated_rect(rect: Rect2, lift: float) -> Rect2:
+	return Rect2(rect.position + Vector2(0, press_strength(rect) * 3.0 - hover_strength(rect) * lift), rect.size)
+
+func draw_paper_panel(rect: Rect2, fill: Color, edge: Color, shadow_height: float = 3.0):
+	draw_rect(Rect2(rect.position + Vector2(0, shadow_height), rect.size), Color(INK, 0.20))
+	draw_rect(rect, fill)
+	draw_rect(rect, edge, false, 1.0)
+	draw_line(rect.position + Vector2(2, 2), rect.position + Vector2(rect.size.x - 2, 2), Color(PAPER_HIGHLIGHT, 0.56))
+
+func button(bounds: Rect2, label: String, col: Color):
+	var hover := hover_strength(bounds)
+	var r := animated_rect(bounds, 3.0)
+	draw_paper_panel(r, col.lightened(hover * 0.22).darkened(press_strength(bounds) * 0.14), PAPER_EDGE.lerp(INK, hover), 4.0 + hover * 2.0)
 	T(r.position + Vector2(0, 29), label, 17, INK, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+
+func draw_notification():
+	if notification_time <= 0.0 or phase == "over":
+		return
+	var entrance := smoothstep(0.0, 0.24, TOAST_DURATION - notification_time)
+	var alpha := entrance * smoothstep(0.0, 0.42, notification_time)
+	var font := ThemeDB.fallback_font
+	var text_width := font.get_string_size(msg, HORIZONTAL_ALIGNMENT_LEFT, -1, 17).x
+	var size := Vector2(maxf(260.0, text_width + 48.0), 52.0)
+	var center := get_viewport_rect().get_center()
+	center.y += lerpf(12.0, 0.0, entrance)
+	var r := Rect2(center - size / 2.0, size)
+	draw_rect(Rect2(r.position + Vector2(0, 5), size), Color(INK, alpha * 0.28))
+	draw_rect(r, Color("30231F", alpha * 0.96))
+	draw_rect(r, Color(GOLD, alpha), false, 1.0)
+	draw_rect(Rect2(r.position + Vector2(0, 0), Vector2(4, size.y)), Color(GOLD, alpha))
+	T(r.position + Vector2(0, 32), msg, 17, Color(PAPER_HIGHLIGHT, alpha), size.x, HORIZONTAL_ALIGNMENT_CENTER)
 
 func get_equip_preview(u, s_name: String, s_tier: int) -> Dictionary:
 	var title = "%s %s" % [u.n, "*".repeat(u.s)]
@@ -1217,24 +1288,37 @@ func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Arra
 		y_off += 18.0
 
 func _draw():
-	draw_rect(Rect2(0, 0, 1280, 720), PARCH)
-	var mp = mouse_pos if mouse_pos != Vector2.ZERO else get_viewport().get_mouse_position()
+	var top_paper := PARCH.lerp(PAPER_HIGHLIGHT, 0.32)
+	draw_polygon(PackedVector2Array([Vector2.ZERO, Vector2(1280, 0), Vector2(1280, 720), Vector2(0, 720)]),
+		PackedColorArray([top_paper, top_paper, PARCH, PARCH]))
+	draw_rect(Rect2(8, 8, 1264, 704), Color(PAPER_EDGE, 0.40), false, 1.0)
+	draw_paper_panel(Rect2(12, 32, 230, 251), Color("EFE0C6"), Color(PAPER_EDGE, 0.50))
+	draw_paper_panel(Rect2(BO - Vector2(7, 7), Vector2(COLS, ROWS) * CELL + Vector2(14, 14)), Color("A18462"), PAPER_EDGE, 5.0)
+	var mp := mouse_pos
 
 	# Grid cells
 	for y in ROWS:
 		for x in COLS:
 			var r = Rect2(BO + Vector2(x, y) * CELL, Vector2(CELL, CELL))
-			draw_rect(r, KRAFT if y >= 3 else KRAFT.darkened(0.15))
-			draw_rect(r, INK, false, 2)
+			var base := KRAFT if y >= 3 else Color("BDAB9A")
+			if (x + y) % 2 == 0:
+				base = base.lightened(0.10)
+			var hover := hover_strength(r)
+			draw_rect(r, base.lerp(PAPER_HIGHLIGHT, hover * 0.52).darkened(press_strength(r) * 0.14))
+			draw_rect(r, PAPER_EDGE.lerp(PURPLE, hover * 0.55), false, 1.0)
 
 	if sel != null and sel[0] == "g":
 		draw_rect(Rect2(BO + Vector2(sel[1]) * CELL, Vector2(CELL, CELL)), PURPLE, false, 4)
 
 	# Bench
 	for i in 8:
-		var r = bench_rect(i)
-		draw_rect(r, KRAFT)
-		draw_rect(r, PURPLE if (sel != null and sel[0] == "b" and sel[1] == i) else INK, false, 3 if (sel != null and sel[0] == "b" and sel[1] == i) else 2)
+		var bounds = bench_rect(i)
+		var hover := hover_strength(bounds)
+		var r := animated_rect(bounds, 2.0)
+		var selected = sel != null and sel[0] == "b" and sel[1] == i
+		draw_paper_panel(r, KRAFT.lerp(PAPER_HIGHLIGHT, hover * 0.62), PURPLE if selected else PAPER_EDGE)
+		if selected:
+			draw_rect(r.grow(-2), PURPLE, false, 2)
 		if bench[i] != null:
 			var idle_t = Time.get_ticks_msec() / 1000.0 * 2.5 + i
 			token(r.position + Vector2(28, 28), bench[i], 0, "idle", idle_t, 0.0, 1.0)
@@ -1285,18 +1369,18 @@ func _draw():
 
 	# Unit Shop Cards
 	for i in 5:
-		var r = card_rect(i)
+		var bounds = card_rect(i)
+		var hover := hover_strength(bounds)
+		var r := animated_rect(bounds, 5.0)
 		var c = shop[i]
-		draw_rect(Rect2(r.position + Vector2(3, 4), r.size), Color(0, 0, 0, 0.3))
-		draw_rect(r, KRAFT)
-		draw_rect(r, INK, false, 2)
+		draw_paper_panel(r, Color("EFDFC1").lerp(PAPER_HIGHLIGHT, hover * 0.8), PAPER_EDGE, 4.0 + hover * 3.0)
 		if c != null:
-			draw_rect(Rect2(r.position, Vector2(140, 28)), TIER_COL[c.t - 1])
+			draw_rect(Rect2(r.position + Vector2(1, 1), Vector2(138, 27)), TIER_COL[c.t - 1].darkened(0.32))
 			T(r.position + Vector2(8, 20), c.n, 15, PARCH)
 			draw_unit_stars(r.position + Vector2(105, 14), c.t, 4.0)
 			T(r.position + Vector2(10, 55), "Ranged" if c.r else "Melee", 15)
 			T(r.position + Vector2(10, 75), "HP %d  AD %d" % [u_hp(c), u_ad(c)], 15)
-			T(r.position + Vector2(10, 105), "%d gold" % c.t, 18, GOLD if gold >= c.t else RED)
+			T(r.position + Vector2(10, 105), "%d gold" % c.t, 18, Color("87520E") if gold >= c.t else RED)
 		else:
 			T(r.position + Vector2(0, 65), "sold", 16, INK, 140, HORIZONTAL_ALIGNMENT_CENTER)
 
@@ -1314,17 +1398,16 @@ func _draw():
 	T(Vector2(20, 250), "Shop odds (T1-T5):", 15)
 	T(Vector2(20, 270), "%d / %d / %d / %d / %d %%" % odds, 15)
 	T(Vector2(20, 330), "Click a unit, then click a\nslot to move/swap it.\nBottom 3 board rows only.", 14)
-	T(Vector2(20, 700), msg, 18, INK)
 
 	# Item Shop
 	T(Vector2(20, 392), "ITEM SHOP", 14)
 	for i in item_shop.size():
-		var r = item_btn_rect(i)
+		var bounds = item_btn_rect(i)
+		var hover := hover_strength(bounds)
+		var r := animated_rect(bounds, 2.0)
 		var it = item_shop[i]
-		draw_rect(Rect2(r.position + Vector2(2, 2), r.size), Color(0, 0, 0, 0.25))
-		draw_rect(r, KRAFT)
 		var col = RARITY_COLS.get(it.rarity, INK) if it != null else INK
-		draw_rect(r, col, false, 2)
+		draw_paper_panel(r, Color("E9D6B6").lerp(PAPER_HIGHLIGHT, hover * 0.8), col, 2.0 + hover)
 		if it != null:
 			draw_rect(Rect2(r.position.x, r.position.y, 6, r.size.y), col)
 			var stars = "*".repeat(it.t)
@@ -1337,9 +1420,12 @@ func _draw():
 	# Item Inventory
 	T(Vector2(900, 364), "ITEMS (click one, then a unit)", 14)
 	for i in 8:
-		var r = item_slot_rect(i)
-		draw_rect(r, KRAFT)
-		draw_rect(r, PURPLE if i == sel_item else INK, false, 4 if i == sel_item else 2)
+		var bounds = item_slot_rect(i)
+		var hover := hover_strength(bounds)
+		var r := animated_rect(bounds, 2.0)
+		draw_paper_panel(r, KRAFT.lerp(PAPER_HIGHLIGHT, hover * 0.62), PURPLE if i == sel_item else PAPER_EDGE)
+		if i == sel_item:
+			draw_rect(r.grow(-2), PURPLE, false, 2)
 		if i < items_inv.size():
 			var it = items_inv[i]
 			var iname = get_it_name(it)
@@ -1360,8 +1446,7 @@ func _draw():
 	if sel != null and loc_get(sel) != null:
 		var d = loc_get(sel)
 		var st = stats(d)
-		draw_rect(Rect2(1140, 60, 130, 320), KRAFT)
-		draw_rect(Rect2(1140, 60, 130, 320), INK, false, 2)
+		draw_paper_panel(Rect2(1140, 60, 130, 320), Color("EFE0C6"), PAPER_EDGE)
 		T(Vector2(1146, 80), d.n, 16)
 		draw_unit_stars(Vector2(1230, 75), d.s, 4.5)
 		T(Vector2(1146, 100), "HP %d" % st.hp, 13)
@@ -1499,3 +1584,5 @@ func _draw():
 
 	if tip != null:
 		draw_tooltip_box(mp, tip.title, tip.col, tip.lines)
+	if qte == null:
+		draw_notification()
