@@ -25,14 +25,48 @@ const GUIDE_TIPS := [
 	["Give defensive items", "to front-line units.", "Equip damage in back."],
 	["Hover over enemies", "before battle to plan", "where to place your team."]
 ]
-enum Tutorial { BUY, SELECT, PLACE, START, FIGHT, DONE }
+enum Tutorial {
+	BUY, SELECT, PLACE, START, FIGHT, LESSON, XP, BUY_ITEM, SELECT_ITEM, EQUIP,
+	MERGE, LOOT, DONE
+}
 const TRAINING_TILE := Vector2i(3, 5)
+const STARTING_GOLD := 12
+const STARTING_HP := 50
+const LESSON_NEXT := Rect2(734, 98, 114, 30)
 const TUTORIAL_LINES := [
-	["Buy the highlighted Archer.", "A purchase goes to", "your bench."],
-	["Click your Archer", "on the bench to select it."],
-	["Click the highlighted tile.", "Ranged units are safer", "in the back row."],
-	["Click Start Battle.", "When the marker hits gold,", "press Space to boost a spell."],
-	["Units fight on their own.", "Press Space when the", "marker hits the gold zone."]
+	["Buy the highlighted Archer. Shop units go to your bench.",
+		"Hover over a shop card to see the character, stats, and price."],
+	["Click the Archer on your bench to select it.",
+		"Click another unit to swap positions, or click Sell (E) to sell it."],
+	["Move the Archer onto the highlighted tile in your back row.",
+		"Place melee units in front. Tier 4 and 5 units need two adjacent tiles."],
+	["Click Start Battle or press Enter. You can see the enemy lineup now.",
+		"Hover over any unit to inspect its stats."],
+	["Units fight automatically. The bars show health and mana.",
+		"When the spell marker reaches the gold zone, press Space for a boost."],
+	[],
+	["Click Buy XP (F). Higher levels let you field more units",
+		"and improve the odds of finding higher-tier units in the shop."],
+	["Buy the highlighted Sword from the Item Shop.",
+		"Hover over items to compare their bonuses and upgrade tiers."],
+	["Click the Sword in your inventory to select it.",
+		"Hover over a unit with an item selected to preview the upgrade."],
+	["Click your Archer to equip the Sword. Each unit can hold three items.",
+		"Equip another copy of an item on the same unit to upgrade it."],
+	["Use Merge to choose three units of the same type and star level.",
+		"The first unit stays and gains a star. Confirm when you're ready."],
+	["Wait for the warning ring, then click the gold orb to collect it.",
+		"Stage 1 starts with a fresh board, shop, gold, and health."]
+]
+const LESSONS := [
+	["Reroll (D) spends gold to refresh both shops. Lock keeps the current",
+		"offers for the next round. The odds panel shows unit tiers at your level."],
+	["You earn gold and XP after each round. Saved gold earns interest.",
+		"Win or loss streaks add gold. Victories can drop collectible gold orbs."],
+	["Win all ten stages to finish. On a loss you take damage and retry",
+		"the same lineup. Monster rounds can also drop an item when you win."],
+	["The next practice round covers leveling, items, merging, and loot.",
+		"Your practice purchases and upgrades will reset when training ends."]
 ]
 const LOOT_WARNING_TIME := 0.9
 const MERGE_BUTTON := Rect2(900, 490, 230, 32)
@@ -181,13 +215,14 @@ const ITEM_NAMES := ["Sword", "Vest", "Chainmail", "Null Cloak", "Swift Blade", 
 const PVE_STAGES := [1, 4, 7]
 const BTNS := ["Reroll (D) 2g", "Lock shop", "Buy XP (F) 4g", "Sell (E)", "START BATTLE (Enter)"]
 
-var gold := 12
+var gold := STARTING_GOLD
 var tutorial_step := Tutorial.BUY
-var tutorial_cost := 0
+var practice_round := 1
+var tutorial_lesson := 0
 var guide_tip_index := -1
 var level := 3
 var xp := 0
-var hp := 50
+var hp := STARTING_HP
 var stage := 1
 var streak := 0
 var phase := "prep"
@@ -269,7 +304,7 @@ func _ready():
 	roll_shop()
 	roll_item_shop()
 	shop[0] = {"n": "Archer", "t": 1, "r": true, "s": 1, "it": []}
-	enemy_formation = [{"d": {"n": "Squire", "t": 1, "r": false, "s": 1, "it": []}, "pos": Vector2(3, 1)}]
+	enemy_formation = [{"d": {"n": "Squire", "t": 1, "r": false, "s": 1, "it": []}, "pos": Vector2(3, 2)}]
 	for i in item_shop.size():
 		hover_amounts[item_btn_rect(i)] = 0.0
 
@@ -371,6 +406,21 @@ func tutorial_target() -> Rect2:
 		Tutorial.SELECT: return bench_rect(0)
 		Tutorial.PLACE: return Rect2(BO + Vector2(TRAINING_TILE) * CELL, Vector2(CELL, CELL))
 		Tutorial.START: return btn_rect(4)
+		Tutorial.LESSON: return LESSON_NEXT
+		Tutorial.XP: return btn_rect(2)
+		Tutorial.BUY_ITEM: return item_btn_rect(0)
+		Tutorial.SELECT_ITEM: return item_slot_rect(0)
+		Tutorial.EQUIP: return unit_footprint(Vector2(TRAINING_TILE), board[TRAINING_TILE])
+		Tutorial.MERGE:
+			if not selecting_merge: return MERGE_BUTTON
+			if merge_locs.size() == 3: return MERGE_ACCEPT
+			return (
+				unit_footprint(Vector2(TRAINING_TILE), board[TRAINING_TILE])
+				if merge_locs.is_empty() else bench_rect(merge_locs.size() - 1)
+			)
+		Tutorial.LOOT:
+			var center := BO + Vector2(3.5, 2.5) * CELL
+			return Rect2(center - Vector2(20, 20), Vector2(40, 40))
 	return Rect2()
 
 func tutorial_click(p: Vector2):
@@ -378,7 +428,6 @@ func tutorial_click(p: Vector2):
 		return
 	match tutorial_step:
 		Tutorial.BUY:
-			tutorial_cost = shop[0].t
 			buy(0)
 			tutorial_step = Tutorial.SELECT
 		Tutorial.SELECT:
@@ -389,6 +438,68 @@ func tutorial_click(p: Vector2):
 			tutorial_step = Tutorial.START
 		Tutorial.START:
 			start_battle()
+		Tutorial.LESSON:
+			tutorial_lesson += 1
+			if tutorial_lesson == LESSONS.size():
+				practice_round = 2
+				enemy_formation.append({
+					"d": {"n": "Archer", "t": 1, "r": true, "s": 1, "it": []},
+					"pos": Vector2(4, 2)
+				})
+				item_shop[0] = {"n": "Sword", "t": 1, "rarity": "common", "cost": 3}
+				bench[0] = board[TRAINING_TILE].duplicate(true)
+				bench[1] = board[TRAINING_TILE].duplicate(true)
+				tutorial_step = Tutorial.XP
+		Tutorial.XP:
+			do_btn(2)
+			tutorial_step = Tutorial.BUY_ITEM
+		Tutorial.BUY_ITEM:
+			buy_item(0)
+			tutorial_step = Tutorial.SELECT_ITEM
+		Tutorial.SELECT_ITEM:
+			sel_item = 0
+			tutorial_step = Tutorial.EQUIP
+		Tutorial.EQUIP:
+			click_loc(["g", TRAINING_TILE])
+			tutorial_step = Tutorial.MERGE
+		Tutorial.MERGE:
+			if not selecting_merge:
+				set_merge_selection(true)
+			elif merge_locs.size() == 3:
+				confirm_merge()
+				tutorial_step = Tutorial.START
+			elif merge_locs.is_empty():
+				select_merge_unit(["g", TRAINING_TILE])
+			else:
+				select_merge_unit(["b", merge_locs.size() - 1])
+		Tutorial.LOOT:
+			if loot_warning_time <= 0.0:
+				finish_tutorial()
+
+func finish_tutorial():
+	tutorial_step = Tutorial.DONE
+	board.clear()
+	bench.fill(null)
+	items_inv.clear()
+	orbs.clear()
+	units.clear()
+	texts.clear()
+	projectiles.clear()
+	loot_warning_time = 0.0
+	ctime = 0.0
+	aura_timer = 0.0
+	gold = STARTING_GOLD
+	hp = STARTING_HP
+	stage = 1
+	level = 3
+	xp = 0
+	streak = 0
+	locked = false
+	sel = null
+	sel_item = -1
+	set_merge_selection(false)
+	start_prep(true)
+	msg = "Practice complete. Stage 1 is ready!"
 
 func pick_tier():
 	var o = ODDS[level]
@@ -547,6 +658,8 @@ func _input(e):
 		if tutorial_step != Tutorial.DONE:
 			if e.keycode == KEY_ENTER and tutorial_step == Tutorial.START:
 				tutorial_click(btn_rect(4).get_center())
+			elif e.keycode == KEY_F and tutorial_step == Tutorial.XP:
+				tutorial_click(btn_rect(2).get_center())
 			elif e.keycode == KEY_SPACE and tutorial_step == Tutorial.FIGHT:
 				qte_press()
 			return
@@ -1072,13 +1185,16 @@ func resolve_qte(bonus, label):
 func end_combat(a0, a1):
 	qte = null
 	if tutorial_step == Tutorial.FIGHT:
-		tutorial_step = Tutorial.DONE
 		phase = "prep"
-		gold += tutorial_cost
 		texts.clear()
 		projectiles.clear()
-		start_prep(true)
-		msg = "Practice complete! Your Archer is ready for stage 1."
+		if practice_round == 1:
+			tutorial_step = Tutorial.LESSON
+		else:
+			tutorial_step = Tutorial.LOOT
+			orbs.append(Vector2(3, 2))
+			loot_warning_time = LOOT_WARNING_TIME
+		notification_time = 0.0
 		return
 	var win = a1 == 0 or (a0 > a1 and a0 > 0)
 	if a0 == 0: win = false
@@ -1432,6 +1548,22 @@ func draw_notification():
 	draw_rect(Rect2(r.position + Vector2(0, 0), Vector2(4, size.y)), Color(GOLD, alpha))
 	T(r.position + Vector2(0, 32), msg, 17, Color(PAPER_HIGHLIGHT, alpha), size.x, HORIZONTAL_ALIGNMENT_CENTER)
 
+func draw_tutorial_guide():
+	var panel := Rect2(258, 12, 610, 122)
+	draw_paper_panel(panel, Color("30231F"), GOLD, 6.0)
+	var center := Vector2(303, 75)
+	draw_circle(center, 39, Color("62446F"))
+	draw_arc(center, 39, 0, TAU, 40, GOLD, 1.5, true)
+	draw_set_transform(center, 0.0, Vector2(1.65, 1.65))
+	draw_fantasy_unit(Vector2.ZERO, {"n": "Sage"}, 0, "idle", Time.get_ticks_msec() / 1000.0)
+	draw_set_transform(Vector2.ZERO)
+	T(Vector2(356, 38), "GUIDE WIZARD  /  PRACTICE %d OF 2" % practice_round, 15, GOLD)
+	var lines: Array = LESSONS[tutorial_lesson] if tutorial_step == Tutorial.LESSON else TUTORIAL_LINES[tutorial_step]
+	for i in lines.size():
+		T(Vector2(356, 64 + i * 21), lines[i], 14, PAPER_HIGHLIGHT)
+	if tutorial_step == Tutorial.LESSON:
+		button(LESSON_NEXT, "Continue", GOLD.lightened(0.35))
+
 func draw_guide():
 	var center := Vector2(39, 346)
 	var idle := Time.get_ticks_msec() / 1000.0
@@ -1446,9 +1578,7 @@ func draw_guide():
 	draw_colored_polygon(tail, fill)
 	draw_polyline(tail, PAPER_EDGE, 1.0, true)
 	var lines: Array = ["Click a unit, then a tile.", "Use the bottom three rows.", "Click me for a tip."]
-	if tutorial_step != Tutorial.DONE:
-		lines = TUTORIAL_LINES[tutorial_step]
-	elif guide_tip_index >= 0:
+	if guide_tip_index >= 0:
 		lines = GUIDE_TIPS[guide_tip_index]
 	for i in lines.size():
 		T(bubble.position + Vector2(9, 16 + 17 * i), lines[i], 12)
@@ -1651,9 +1781,9 @@ func _draw():
 	# Buttons
 	for i in 5:
 		button(btn_rect(i), BTNS[i] + (" [ON]" if i == 1 and locked else ""), PURPLE.lightened(0.4) if i == 4 else GOLD.lightened(0.3))
-		if tutorial_step != Tutorial.DONE and (tutorial_step != Tutorial.START or i != 4):
+		if tutorial_step != Tutorial.DONE and not tutorial_target().intersects(btn_rect(i)):
 			draw_rect(animated_rect(btn_rect(i), 3.0), Color(PARCH, 0.62))
-	if phase == "prep" and tutorial_step == Tutorial.DONE:
+	if phase == "prep" and (tutorial_step == Tutorial.DONE or tutorial_step == Tutorial.MERGE):
 		button(MERGE_BUTTON, "Cancel merge" if selecting_merge else "Merge: Select the units", PURPLE.lightened(0.48))
 
 	# HUD
@@ -1670,7 +1800,8 @@ func _draw():
 	draw_circle(Vector2(25, 299), 5, Color("AB711C"), true, -1, true)
 	var income_label := "Practice has no HP or gold penalty" if practice else "Round end: +%d gold minimum" % (round_income() + mini(gold / 10, 5))
 	T(Vector2(37, 304), income_label, 12)
-	draw_guide()
+	if not practice:
+		draw_guide()
 
 	# Item Shop
 	T(Vector2(20, 392), "ITEM SHOP", 14)
@@ -1689,7 +1820,7 @@ func _draw():
 			T(r.position + Vector2(10, 27), get_it_desc(it.n, it.t), 10, col.darkened(0.2))
 		else:
 			T(r.position + Vector2(10, 20), "sold", 13, INK)
-		if practice:
+		if practice and (tutorial_step != Tutorial.BUY_ITEM or i != 0):
 			draw_rect(r, Color(PARCH, 0.62))
 
 	# Item Inventory
@@ -1761,6 +1892,10 @@ func _draw():
 		T(Vector2(0, 330), "YOU WIN!" if hp > 0 else "YOU LOSE", 64, INK, 1280, HORIZONTAL_ALIGNMENT_CENTER)
 		T(Vector2(0, 380), "Click to restart", 24, PURPLE, 1280, HORIZONTAL_ALIGNMENT_CENTER)
 
+	if practice and selecting_merge:
+		draw_merge_prompt()
+	if practice:
+		draw_tutorial_guide()
 	var target := tutorial_target()
 	if target.has_area():
 		var pulse := 0.70 + 0.30 * sin(Time.get_ticks_msec() / 135.0)
@@ -1770,7 +1905,8 @@ func _draw():
 	# Tooltips & Hover cards (renders on top of everything)
 	var tip = null
 	if selecting_merge:
-		draw_merge_prompt()
+		if not practice:
+			draw_merge_prompt()
 		return
 
 	if phase == "prep":
@@ -1892,5 +2028,5 @@ func _draw():
 
 	if tip != null:
 		draw_tooltip_box(mp, tip.title, tip.col, tip.lines, tip.get("portrait"))
-	if qte == null:
+	if qte == null and not practice:
 		draw_notification()
