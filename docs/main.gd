@@ -33,6 +33,7 @@ const TRAINING_TILE := Vector2i(3, 5)
 const STARTING_GOLD := 12
 const STARTING_HP := 50
 const LESSON_NEXT := Rect2(734, 98, 114, 30)
+const SKIP_TUTORIAL := Rect2(904, 14, 222, 33)
 const TUTORIAL_LINES := [
 	["Buy the highlighted Archer. Shop units go to your bench.",
 		"Hover over a shop card to see the character, stats, and price."],
@@ -291,6 +292,7 @@ func _ready():
 	randomize()
 	hover_amounts[GUIDE_MODEL] = 0.0
 	hover_amounts[GUIDE_BUBBLE] = 0.0
+	hover_amounts[SKIP_TUTORIAL] = 0.0
 	hover_amounts[MERGE_BUTTON] = 0.0
 	hover_amounts[MERGE_ACCEPT] = 0.0
 	hover_amounts[MERGE_CANCEL] = 0.0
@@ -479,8 +481,11 @@ func tutorial_click(p: Vector2):
 			if loot_warning_time <= 0.0:
 				finish_tutorial()
 
-func finish_tutorial():
+func finish_tutorial(skipped: bool = false):
 	tutorial_step = Tutorial.DONE
+	phase = "prep"
+	qte = null
+	cur_pve = false
 	board.clear()
 	bench.fill(null)
 	items_inv.clear()
@@ -502,7 +507,7 @@ func finish_tutorial():
 	sel_item = -1
 	set_merge_selection(false)
 	start_prep(true)
-	msg = "Practice complete. Stage 1 is ready!"
+	msg = "Tutorial skipped. Stage 1 is ready!" if skipped else "Practice complete. Stage 1 is ready!"
 
 func pick_tier():
 	var o = ODDS[level]
@@ -682,6 +687,9 @@ func _input(e):
 func click(p):
 	if phase == "over":
 		get_tree().reload_current_scene()
+		return
+	if tutorial_step != Tutorial.DONE and SKIP_TUTORIAL.has_point(p):
+		finish_tutorial(true)
 		return
 	if phase != "prep": return
 	if tutorial_step != Tutorial.DONE:
@@ -958,9 +966,12 @@ func _process(dt):
 	loot_warning_time = maxf(0.0, loot_warning_time - dt)
 	press_time = maxf(0.0, press_time - dt)
 	mouse_pos = get_viewport().get_mouse_position()
-	var can_hover = phase == "prep" and get_viewport().get_visible_rect().has_point(mouse_pos)
+	var can_hover: bool = phase == "prep" and get_viewport().get_visible_rect().has_point(mouse_pos)
 	for rect in hover_amounts:
-		var target := 1.0 if can_hover and rect.has_point(mouse_pos) else 0.0
+		var active := can_hover
+		if rect == SKIP_TUTORIAL:
+			active = tutorial_step != Tutorial.DONE
+		var target := 1.0 if active and rect.has_point(mouse_pos) else 0.0
 		hover_amounts[rect] = move_toward(hover_amounts[rect], target, dt * 7.0)
 	for t in texts: t.t -= dt
 	texts = texts.filter(func(t): return t.t > 0)
@@ -1627,6 +1638,64 @@ func draw_spell_qte():
 func unit_footprint(cell: Vector2, unit: Dictionary) -> Rect2:
 	return Rect2(BO + cell * CELL, Vector2(unit_width(unit) * CELL, CELL))
 
+func draw_forest_tree(base: Vector2, height: float, tint: Color):
+	draw_circle(base + Vector2(7, -3), height * 0.28, Color("1D351E", 0.20))
+	draw_rect(Rect2(base - Vector2(3, height * 0.33), Vector2(6, height * 0.33)), Color("65442F"))
+	for layer in range(3):
+		var y := base.y - height * (1.0 - layer * 0.18)
+		var width := height * (0.19 + layer * 0.055)
+		var points := PackedVector2Array([Vector2(base.x, y), Vector2(base.x + width, y + height * 0.44),
+			Vector2(base.x + width * 0.20, y + height * 0.40),
+			Vector2(base.x - width * 0.14, y + height * 0.47), Vector2(base.x - width, y + height * 0.41)])
+		draw_colored_polygon(points, tint.lightened(float(2 - layer) * 0.04))
+
+func draw_forest_surroundings():
+	var sky := Color("E5E9C7")
+	var ground := Color("B4BE8E")
+	draw_polygon(PackedVector2Array([Vector2.ZERO, Vector2(1280, 0), Vector2(1280, 720), Vector2(0, 720)]),
+		PackedColorArray([sky, sky, ground, ground]))
+	draw_rect(Rect2(8, 8, 1264, 704), Color("405637", 0.45), false, 1.0)
+	draw_rect(Rect2(252, 0, 625, 516), Color("58784B", 0.22))
+
+	for i in range(9):
+		var x := 258.0 + float(i % 3) * 28.0
+		var y := 92.0 + float(i / 3) * 159.0 + float(i % 3) * 18.0
+		draw_forest_tree(Vector2(x, y), 54.0 + (i % 4) * 14.0, Color("426749"))
+		draw_forest_tree(Vector2(1152.0 - x, y + 18.0), 48.0 + (i % 4) * 13.0, Color("395C43"))
+
+	var time := Time.get_ticks_msec() / 1000.0
+	for i in range(12):
+		var x := (287.0 if i % 2 == 0 else 856.0) + sin(time * 0.7 + i * 2.4) * 17.0
+		var y := 44.0 + i * 36.0 + cos(time + i) * 9.0
+		var glow := 0.45 + 0.28 * sin(time * 2.3 + i)
+		draw_circle(Vector2(x, y), 5, Color("FFF0A7", glow * 0.24))
+		draw_circle(Vector2(x, y), 1.8, Color("FFF0A7", glow))
+
+	var field := Rect2(BO, Vector2(COLS, ROWS) * CELL)
+	draw_rect(field.grow(12), Color("293D2B", 0.25))
+	draw_paper_panel(field.grow(8), Color("524535"), Color("354430"), 5.0)
+	draw_rect(field.grow(4), Color("849143"), false, 2.0)
+	draw_paper_panel(Rect2(374, 425, 522, 84), Color("5F5B3B"), Color("3C4C35"), 4.0)
+
+func draw_forest_tile(tile: Rect2, x: int, y: int):
+	var grass := Color("A7BA78") if y >= 3 else Color("9BA57B")
+	if (x + y) % 2 == 0:
+		grass = grass.lightened(0.10)
+	var hover := hover_strength(tile)
+	var base := grass.lerp(Color("EBECC2"), hover * 0.68).darkened(press_strength(tile) * 0.14)
+	draw_rect(tile, base)
+	draw_rect(tile, Color("5D714E").lerp(PURPLE, hover * 0.60), false, 1.0)
+	var corner := tile.position + Vector2(9 + (x * 11 + y * 7) % 23, 54)
+	var moss := Color("526C43", 0.45)
+	for i in range(3):
+		draw_line(corner + Vector2(i * 3, 0), corner + Vector2(i * 4 - 4, -5 - (i % 2) * 3), moss, 1.0, true)
+	if (x * 3 + y * 5) % 4 == 0:
+		var stone := tile.position + Vector2(50, 14)
+		draw_circle(stone + Vector2(0, 1), 4.5, Color("657258", 0.45))
+		draw_circle(stone, 3.5, Color("D7DCAC", 0.7))
+	if y == 3:
+		draw_line(tile.position, tile.position + Vector2(tile.size.x, 0), Color("55634C"), 2.0)
+
 func get_equip_preview(u, s_name: String, s_tier: int) -> Dictionary:
 	var title = "%s %s" % [u.n, "*".repeat(u.s)]
 	var lines = []
@@ -1709,24 +1778,15 @@ func draw_tooltip_box(pos: Vector2, title: String, title_col: Color, lines: Arra
 		draw_unit_stars(center - Vector2(0, 30), portrait.s, 4.5)
 
 func _draw():
-	var top_paper := PARCH.lerp(PAPER_HIGHLIGHT, 0.32)
-	draw_polygon(PackedVector2Array([Vector2.ZERO, Vector2(1280, 0), Vector2(1280, 720), Vector2(0, 720)]),
-		PackedColorArray([top_paper, top_paper, PARCH, PARCH]))
-	draw_rect(Rect2(8, 8, 1264, 704), Color(PAPER_EDGE, 0.40), false, 1.0)
+	draw_forest_surroundings()
 	draw_paper_panel(Rect2(12, 32, 230, 251), Color("EFE0C6"), Color(PAPER_EDGE, 0.50))
-	draw_paper_panel(Rect2(BO - Vector2(7, 7), Vector2(COLS, ROWS) * CELL + Vector2(14, 14)), Color("A18462"), PAPER_EDGE, 5.0)
 	var mp := mouse_pos
 
 	# Grid cells
 	for y in ROWS:
 		for x in COLS:
 			var r = Rect2(BO + Vector2(x, y) * CELL, Vector2(CELL, CELL))
-			var base := KRAFT if y >= 3 else Color("BDAB9A")
-			if (x + y) % 2 == 0:
-				base = base.lightened(0.10)
-			var hover := hover_strength(r)
-			draw_rect(r, base.lerp(PAPER_HIGHLIGHT, hover * 0.52).darkened(press_strength(r) * 0.14))
-			draw_rect(r, PAPER_EDGE.lerp(PURPLE, hover * 0.55), false, 1.0)
+			draw_forest_tile(r, x, y)
 
 	# Bench
 	for i in 8:
@@ -1740,7 +1800,7 @@ func _draw():
 		if bench[i] != null:
 			var idle_t = Time.get_ticks_msec() / 1000.0 * 2.5 + i
 			token(r.position + Vector2(28, 28), bench[i], 0, "idle", idle_t, 0.0, 1.0)
-	T(Vector2(384, 440), "BENCH", 13)
+	T(Vector2(384, 440), "BENCH", 13, PAPER_HIGHLIGHT)
 
 	# Combat or Board units
 	if phase == "combat":
@@ -1933,6 +1993,7 @@ func _draw():
 		draw_merge_prompt()
 	if practice:
 		draw_tutorial_guide()
+		button(SKIP_TUTORIAL, "Skip Tutorial", Color("F4D795"))
 	var target := tutorial_target()
 	if target.has_area():
 		var pulse := 0.70 + 0.30 * sin(Time.get_ticks_msec() / 135.0)
