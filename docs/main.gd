@@ -25,6 +25,15 @@ const GUIDE_TIPS := [
 	["Give defensive items", "to front-line units.", "Equip damage in back."],
 	["Hover over enemies", "before battle to plan", "where to place your team."]
 ]
+enum Tutorial { BUY, SELECT, PLACE, START, FIGHT, DONE }
+const TRAINING_TILE := Vector2i(3, 5)
+const TUTORIAL_LINES := [
+	["Buy the highlighted Archer.", "A purchase goes to", "your bench."],
+	["Click your Archer", "on the bench to select it."],
+	["Click the highlighted tile.", "Ranged units are safer", "in the back row."],
+	["Click Start Battle.", "When the marker hits gold,", "press Space to boost a spell."],
+	["Units fight on their own.", "Press Space when the", "marker hits the gold zone."]
+]
 const LOOT_WARNING_TIME := 0.9
 const MERGE_BUTTON := Rect2(900, 490, 230, 32)
 const MERGE_SELECT_PANEL := Rect2(430, 144, 420, 80)
@@ -173,6 +182,8 @@ const PVE_STAGES := [1, 4, 7]
 const BTNS := ["Reroll (D) 2g", "Lock shop", "Buy XP (F) 4g", "Sell (E)", "START BATTLE (Enter)"]
 
 var gold := 12
+var tutorial_step := Tutorial.BUY
+var tutorial_cost := 0
 var guide_tip_index := -1
 var level := 3
 var xp := 0
@@ -182,7 +193,7 @@ var streak := 0
 var phase := "prep"
 var locked := false
 var notification_time := TOAST_DURATION
-var msg := "Buy units, place them on the bottom 3 rows, then start the battle.":
+var msg := "Practice battle. Follow the wizard's instructions.":
 	set(value):
 		msg = value
 		notification_time = TOAST_DURATION
@@ -257,7 +268,8 @@ func _ready():
 			hover_amounts[Rect2(BO + Vector2(x, y) * CELL, Vector2(CELL, CELL))] = 0.0
 	roll_shop()
 	roll_item_shop()
-	roll_enemy_formation()
+	shop[0] = {"n": "Archer", "t": 1, "r": true, "s": 1, "it": []}
+	enemy_formation = [{"d": {"n": "Squire", "t": 1, "r": false, "s": 1, "it": []}, "pos": Vector2(3, 1)}]
 	for i in item_shop.size():
 		hover_amounts[item_btn_rect(i)] = 0.0
 
@@ -351,7 +363,32 @@ func bench_rect(i): return Rect2(384 + i * 64, 446, 56, 56)
 func btn_rect(i): return Rect2(900, 60 + i * 56, 230, 46)
 func xp_need(): return XPN.get(level, 9999)
 func round_income() -> int:
-	return 8 + floori(stage / 2.0)
+	return 7 + floori(stage / 2.0)
+
+func tutorial_target() -> Rect2:
+	match tutorial_step:
+		Tutorial.BUY: return card_rect(0)
+		Tutorial.SELECT: return bench_rect(0)
+		Tutorial.PLACE: return Rect2(BO + Vector2(TRAINING_TILE) * CELL, Vector2(CELL, CELL))
+		Tutorial.START: return btn_rect(4)
+	return Rect2()
+
+func tutorial_click(p: Vector2):
+	if not tutorial_target().has_point(p):
+		return
+	match tutorial_step:
+		Tutorial.BUY:
+			tutorial_cost = shop[0].t
+			buy(0)
+			tutorial_step = Tutorial.SELECT
+		Tutorial.SELECT:
+			click_loc(["b", 0])
+			tutorial_step = Tutorial.PLACE
+		Tutorial.PLACE:
+			click_loc(["g", TRAINING_TILE])
+			tutorial_step = Tutorial.START
+		Tutorial.START:
+			start_battle()
 
 func pick_tier():
 	var o = ODDS[level]
@@ -507,6 +544,12 @@ func _input(e):
 					break
 		click(e.position)
 	elif e is InputEventKey and e.pressed and not e.echo:
+		if tutorial_step != Tutorial.DONE:
+			if e.keycode == KEY_ENTER and tutorial_step == Tutorial.START:
+				tutorial_click(btn_rect(4).get_center())
+			elif e.keycode == KEY_SPACE and tutorial_step == Tutorial.FIGHT:
+				qte_press()
+			return
 		if selecting_merge:
 			if e.keycode == KEY_ESCAPE:
 				set_merge_selection(false)
@@ -525,6 +568,9 @@ func click(p):
 		get_tree().reload_current_scene()
 		return
 	if phase != "prep": return
+	if tutorial_step != Tutorial.DONE:
+		tutorial_click(p)
+		return
 	if MERGE_BUTTON.has_point(p):
 		animate_press(MERGE_BUTTON)
 		set_merge_selection(not selecting_merge)
@@ -754,7 +800,8 @@ func start_battle():
 	sel_item = -1
 	orbs.clear()
 	loot_warning_time = 0.0
-	cur_pve = stage in PVE_STAGES
+	var practice := tutorial_step == Tutorial.START
+	cur_pve = not practice and stage in PVE_STAGES
 	phase = "combat"
 	units = []
 	texts = []
@@ -766,8 +813,13 @@ func start_battle():
 		make_unit(board[k], 0, Vector2(k) + Vector2((unit_width(board[k]) - 1) * 0.5, 0), 1.0)
 	for enemy in enemy_formation:
 		var center: Vector2 = enemy.pos + Vector2((unit_width(enemy.d) - 1) * 0.5, 0)
-		make_unit(enemy.d, 1, center, 0.70 + 0.045 * stage)
-	msg = ("PvE monsters! " if cur_pve else "") + "Fight! Press SPACE when a unit's prompt appears."
+		make_unit(enemy.d, 1, center, 0.25 if practice else 0.70 + 0.045 * stage)
+	if practice:
+		tutorial_step = Tutorial.FIGHT
+		units[0].mana = 100.0
+		notification_time = 0.0
+	else:
+		msg = ("PvE monsters! " if cur_pve else "") + "Fight! Press SPACE when a unit's prompt appears."
 
 func nearest(u):
 	var best = null
@@ -874,7 +926,7 @@ func sim(dt):
 		return
 
 	if qte != null:
-		qte.t += dt
+		qte.t += dt * (0.4 if tutorial_step == Tutorial.FIGHT else 1.0)
 		if qte.t > 0.75: resolve_qte(0.0, "")
 
 	for u in units:
@@ -1019,6 +1071,15 @@ func resolve_qte(bonus, label):
 
 func end_combat(a0, a1):
 	qte = null
+	if tutorial_step == Tutorial.FIGHT:
+		tutorial_step = Tutorial.DONE
+		phase = "prep"
+		gold += tutorial_cost
+		texts.clear()
+		projectiles.clear()
+		start_prep(true)
+		msg = "Practice complete! Your Archer is ready for stage 1."
+		return
 	var win = a1 == 0 or (a0 > a1 and a0 > 0)
 	if a0 == 0: win = false
 	if win: streak = streak + 1 if streak > 0 else 1
@@ -1027,7 +1088,7 @@ func end_combat(a0, a1):
 	var sb = 0 if n < 2 else (1 if n < 4 else (2 if n == 4 else 3))
 	var interest = mini(gold / 10, 5)
 	var base := round_income()
-	var inc = base + interest + sb + (3 if win else 0)
+	var inc = base + interest + sb + (2 if win else 0)
 	gold += inc
 	add_xp(3)
 	var res = "WIN" if win else "LOSS"
@@ -1385,7 +1446,9 @@ func draw_guide():
 	draw_colored_polygon(tail, fill)
 	draw_polyline(tail, PAPER_EDGE, 1.0, true)
 	var lines: Array = ["Click a unit, then a tile.", "Use the bottom three rows.", "Click me for a tip."]
-	if guide_tip_index >= 0:
+	if tutorial_step != Tutorial.DONE:
+		lines = TUTORIAL_LINES[tutorial_step]
+	elif guide_tip_index >= 0:
 		lines = GUIDE_TIPS[guide_tip_index]
 	for i in lines.size():
 		T(bubble.position + Vector2(9, 16 + 17 * i), lines[i], 12)
@@ -1582,25 +1645,31 @@ func _draw():
 			T(r.position + Vector2(10, 105), "%d gold" % c.t, 18, Color("87520E") if gold >= c.t else RED)
 		else:
 			T(r.position + Vector2(0, 65), "sold", 16, INK, 140, HORIZONTAL_ALIGNMENT_CENTER)
+		if tutorial_step != Tutorial.DONE and (tutorial_step != Tutorial.BUY or i != 0):
+			draw_rect(r, Color(PARCH, 0.62))
 
 	# Buttons
 	for i in 5:
 		button(btn_rect(i), BTNS[i] + (" [ON]" if i == 1 and locked else ""), PURPLE.lightened(0.4) if i == 4 else GOLD.lightened(0.3))
-	if phase == "prep":
+		if tutorial_step != Tutorial.DONE and (tutorial_step != Tutorial.START or i != 4):
+			draw_rect(animated_rect(btn_rect(i), 3.0), Color(PARCH, 0.62))
+	if phase == "prep" and tutorial_step == Tutorial.DONE:
 		button(MERGE_BUTTON, "Cancel merge" if selecting_merge else "Merge: Select the units", PURPLE.lightened(0.48))
 
 	# HUD
-	var hud = ["STAGE %d / 10" % stage, "HP: %d" % hp, "Gold: %d  (interest +%d)" % [gold, mini(gold / 10, 5)],
+	var practice := tutorial_step != Tutorial.DONE
+	var hud = ["PRACTICE BATTLE" if practice else "STAGE %d / 10" % stage, "HP: %d" % hp, "Gold: %d  (interest +%d)" % [gold, mini(gold / 10, 5)],
 		"Level: %d  (board %d/%d)" % [level, board.size(), level],
 		"XP: %d / %s" % [xp, str(xp_need()) if level < 9 else "MAX"], "Streak: %d" % streak,
-		"Round: " + ("PvE monsters" if stage in PVE_STAGES else "vs player")]
+		"Round: " + ("training" if practice else ("PvE monsters" if stage in PVE_STAGES else "vs player"))]
 	for i in hud.size(): T(Vector2(20, 60 + i * 28), hud[i], 20)
 	var odds = ODDS[level]
 	T(Vector2(20, 250), "Shop odds (T1-T5):", 15)
 	T(Vector2(20, 270), "%d / %d / %d / %d / %d %%" % odds, 15)
 	draw_paper_panel(Rect2(12, 288, 230, 22), Color("F4D795"), Color("9C6928"), 2.0)
 	draw_circle(Vector2(25, 299), 5, Color("AB711C"), true, -1, true)
-	T(Vector2(37, 304), "Round end: +%d gold minimum" % (round_income() + mini(gold / 10, 5)), 13)
+	var income_label := "Practice has no HP or gold penalty" if practice else "Round end: +%d gold minimum" % (round_income() + mini(gold / 10, 5))
+	T(Vector2(37, 304), income_label, 12)
 	draw_guide()
 
 	# Item Shop
@@ -1620,6 +1689,8 @@ func _draw():
 			T(r.position + Vector2(10, 27), get_it_desc(it.n, it.t), 10, col.darkened(0.2))
 		else:
 			T(r.position + Vector2(10, 20), "sold", 13, INK)
+		if practice:
+			draw_rect(r, Color(PARCH, 0.62))
 
 	# Item Inventory
 	T(Vector2(900, 364), "ITEMS (click one, then a unit)", 14)
@@ -1689,6 +1760,12 @@ func _draw():
 		draw_rect(Rect2(0, 0, 1280, 720), Color(PARCH, 0.9))
 		T(Vector2(0, 330), "YOU WIN!" if hp > 0 else "YOU LOSE", 64, INK, 1280, HORIZONTAL_ALIGNMENT_CENTER)
 		T(Vector2(0, 380), "Click to restart", 24, PURPLE, 1280, HORIZONTAL_ALIGNMENT_CENTER)
+
+	var target := tutorial_target()
+	if target.has_area():
+		var pulse := 0.70 + 0.30 * sin(Time.get_ticks_msec() / 135.0)
+		draw_rect(target.grow(3.0), Color("905313"), false, 5.0)
+		draw_rect(target.grow(3.0), Color(GOLD, pulse), false, 3.0)
 
 	# Tooltips & Hover cards (renders on top of everything)
 	var tip = null
