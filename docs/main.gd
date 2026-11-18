@@ -220,7 +220,19 @@ const ITEM_NAMES := ["Sword", "Vest", "Chainmail", "Null Cloak", "Swift Blade", 
 const PVE_STAGES := [1, 4, 7]
 const BTNS := ["Reroll (D) 2g", "Lock shop", "Buy XP (F) 4g", "Sell (E)", "START BATTLE (Enter)"]
 
-var gold := STARTING_GOLD
+var econ := PlayerEconomy.new()
+var gold: int:
+	get: return econ.gold
+	set(v): econ.gold = v
+var level: int:
+	get: return econ.level
+	set(v): econ.level = v
+var xp: int:
+	get: return econ.xp
+	set(v): econ.xp = v
+var streak: int:
+	get: return econ.streak
+	set(v): econ.streak = v
 var title_open := true
 var title_elapsed := 0.0
 var title_hover := 0.0
@@ -228,11 +240,8 @@ var tutorial_step := Tutorial.BUY
 var practice_round := 1
 var tutorial_lesson := 0
 var guide_tip_index := -1
-var level := 3
-var xp := 0
 var hp := STARTING_HP
 var stage := 1
-var streak := 0
 var phase := "prep"
 var locked := false
 var notification_time := TOAST_DURATION
@@ -405,7 +414,7 @@ func item_slot_rect(i): return Rect2(900 + (i % 4) * 58, 372 + (i / 4) * 58, 52,
 func card_rect(i): return Rect2(250 + i * 150, 530, 140, 120)
 func bench_rect(i): return Rect2(384 + i * 64, 446, 56, 56)
 func btn_rect(i): return Rect2(900, 60 + i * 56, 230, 46)
-func xp_need(): return XPN.get(level, 9999)
+func xp_need(): return econ.get_xp_needed()
 func round_income() -> int:
 	return 7 + floori(stage / 2.0)
 
@@ -500,12 +509,11 @@ func finish_tutorial(skipped: bool = false):
 	loot_warning_time = 0.0
 	ctime = 0.0
 	aura_timer = 0.0
-	gold = STARTING_GOLD
+	econ.reset()
 	hp = STARTING_HP
 	stage = 1
-	level = 3
-	xp = 0
-	streak = 0
+	hp = STARTING_HP
+	stage = 1
 	locked = false
 	sel = null
 	sel_item = -1
@@ -514,7 +522,7 @@ func finish_tutorial(skipped: bool = false):
 	msg = "Tutorial skipped. Stage 1 is ready!" if skipped else "Practice complete. Stage 1 is ready!"
 
 func pick_tier():
-	var o = ODDS[level]
+	var o = econ.get_shop_odds()
 	var r = randi_range(1, 100)
 	var acc = 0
 	for i in 5:
@@ -652,7 +660,7 @@ func confirm_merge():
 	if not next_merge.is_empty():
 		msg += " " + next_merge
 
-func sell_value(u): return u.t * int(pow(3, u.s - 1)) - (1 if u.s > 1 else 0)
+func sell_value(u): return econ.get_sell_value(u)
 
 # ---------- input ----------
 func _input(e):
@@ -743,7 +751,7 @@ func click(p):
 			break
 		if (BO + o * CELL + Vector2(32, 32)).distance_to(p) < 20:
 			orbs.erase(o)
-			gold += 1
+			econ.collect_loot_orb()
 			msg = "Loot orb: +1 gold."
 			return
 	for i in 5:
@@ -775,7 +783,7 @@ func buy_item(i):
 	if items_inv.size() >= 8:
 		msg = "Item bench full (max 8 items)."
 		return
-	gold -= it.cost
+	econ.spend_gold(it.cost)
 	items_inv.append({"n": it.n, "t": it.t})
 	item_shop[i] = null
 	msg = "Bought %s (%s) for %dg!" % [it.n, "*".repeat(it.t), it.cost]
@@ -846,7 +854,7 @@ func buy(i):
 	if idx == -1:
 		msg = "Bench full."
 		return
-	gold -= c.t
+	econ.spend_gold(c.t)
 	bench[idx] = c.duplicate()
 	shop[i] = null
 	var prompt := merge_prompt_for(bench[idx])
@@ -858,32 +866,30 @@ func do_btn(i):
 	animate_press(btn_rect(i))
 	match i:
 		0:
-			if gold >= 2:
-				gold -= 2
+			if econ.spend_gold(PlayerEconomy.REROLL_COST):
 				roll_shop()
 				roll_item_shop()
-			else: msg = "Need 2 gold."
+			else: msg = "Need %d gold." % PlayerEconomy.REROLL_COST
 		1:
 			locked = not locked
 			msg = "Shop will be kept next round." if locked else "Shop unlocked."
 		2:
-			if gold >= 4 and level < 9:
-				gold -= 4
-				add_xp(4)
-			else: msg = "Need 4 gold (or already max level)."
+			var res := econ.buy_xp()
+			if not res.ok:
+				msg = res.msg
+			elif res.leveled:
+				msg = "Level up! Now level %d." % level
 		3:
 			if sel != null:
-				gold += sell_value(loc_get(sel))
+				econ.sell_unit(loc_get(sel))
 				loc_set(sel, null)
 				sel = null
 		4: start_battle()
 
 func add_xp(n):
-	xp += n
-	while level < 9 and xp >= xp_need():
-		xp -= xp_need()
-		level += 1
+	if econ.add_xp(n):
 		msg = "Level up! Now level %d." % level
+
 
 # ---------- battle ----------
 func make_unit(d, team, pos, mult):
@@ -1233,21 +1239,16 @@ func end_combat(a0, a1):
 		return
 	var win = a1 == 0 or (a0 > a1 and a0 > 0)
 	if a0 == 0: win = false
-	if win: streak = streak + 1 if streak > 0 else 1
-	else: streak = streak - 1 if streak < 0 else -1
-	var n = absi(streak)
-	var sb = 0 if n < 2 else (1 if n < 4 else (2 if n == 4 else 3))
-	var interest = mini(gold / 10, 5)
 	var base := round_income()
-	var inc = base + interest + sb + (2 if win else 0)
-	gold += inc
-	add_xp(3)
+	var payout := econ.settle_round(win, base)
 	var res = "WIN" if win else "LOSS"
 	if not win:
 		var dmg = mini(8, 2 + a1)
 		hp -= dmg
 		res += " (-%d HP)" % dmg
-	msg = "%s. +%d gold (%d base, %d interest, %d streak)." % [res, inc, base, interest, sb]
+	msg = "%s. +%d gold (%d base, %d interest, %d streak)." % [res, payout.total_gold, payout.base, payout.interest, payout.streak_bonus]
+	if payout.leveled:
+		msg += " Level up! Now level %d." % level
 	if win:
 		for e in units:
 			if e.team == 1 and orbs.size() < 3: orbs.append(e.pos)
