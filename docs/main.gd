@@ -17,7 +17,14 @@ const PAPER_EDGE := Color("967550")
 const TOAST_DURATION := 4.0
 const GUIDE_BUBBLE := Rect2(69, 317, 173, 58)
 const GUIDE_MODEL := Rect2(17, 317, 45, 58)
-const GUIDE_LINE := "Click a unit, then click a slot to move or swap it. Use the bottom three rows."
+const GUIDE_TIPS := [
+	["Put melee units up front.", "Keep ranged units back.", "Click me for another tip."],
+	["Buy XP to field more units.", "A bigger team helps you", "survive later rounds."],
+	["Three matching units", "can merge into a stronger", "unit with one more star."],
+	["Tier 4 and 5 units need", "two tiles side by side.", "Leave room next to them."],
+	["Give defensive items", "to front-line units.", "Equip damage in back."],
+	["Hover over enemies", "before battle to plan", "where to place your team."]
+]
 const LOOT_WARNING_TIME := 0.9
 const MERGE_BUTTON := Rect2(900, 490, 230, 32)
 const MERGE_SELECT_PANEL := Rect2(430, 144, 420, 80)
@@ -29,7 +36,7 @@ const DEFS := [["Squire",1,false],["Archer",1,true],["Knight",2,false],["Mage",2
 	["Rogue",3,false],["Cleric",3,true],["Golem",4,false],["Witch",4,true],["Dragon",5,false],["Sage",5,true]]
 const ODDS := {3:[75,25,0,0,0],4:[55,30,15,0,0],5:[45,33,20,2,0],6:[30,40,25,5,0],
 	7:[19,30,35,15,1],8:[16,20,35,25,4],9:[9,15,30,30,16]}
-const XPN := {3:6,4:10,5:20,6:36,7:48,8:60}
+const XPN := {3:4,4:8,5:12,6:18,7:24,8:32}
 
 const RARITY_COLS := {
 	"common": Color("4e8752"),
@@ -165,10 +172,11 @@ const ITEM_NAMES := ["Sword", "Vest", "Chainmail", "Null Cloak", "Swift Blade", 
 const PVE_STAGES := [1, 4, 7]
 const BTNS := ["Reroll (D) 2g", "Lock shop", "Buy XP (F) 4g", "Sell (E)", "START BATTLE (Enter)"]
 
-var gold := 8
+var gold := 12
+var guide_tip_index := -1
 var level := 3
 var xp := 0
-var hp := 40
+var hp := 50
 var stage := 1
 var streak := 0
 var phase := "prep"
@@ -342,6 +350,8 @@ func card_rect(i): return Rect2(250 + i * 150, 530, 140, 120)
 func bench_rect(i): return Rect2(384 + i * 64, 446, 56, 56)
 func btn_rect(i): return Rect2(900, 60 + i * 56, 230, 46)
 func xp_need(): return XPN.get(level, 9999)
+func round_income() -> int:
+	return 8 + floori(stage / 2.0)
 
 func pick_tier():
 	var o = ODDS[level]
@@ -399,6 +409,7 @@ func start_prep(advance: bool):
 	locked = false
 	if advance:
 		roll_enemy_formation()
+		guide_tip_index = (stage - 2) % GUIDE_TIPS.size()
 
 func loc_get(l):
 	if l[0] == "b": return bench[l[1]]
@@ -408,6 +419,32 @@ func loc_set(l, u):
 	if l[0] == "b": bench[l[1]] = u
 	elif u == null: board.erase(l[1])
 	else: board[l[1]] = u
+
+func unit_width(unit: Dictionary) -> int:
+	return 2 if unit.t >= 4 else 1
+
+func board_anchor(cell: Vector2i) -> Vector2i:
+	var left := cell - Vector2i(1, 0)
+	if not board.has(cell) and board.has(left) and unit_width(board[left]) == 2:
+		return left
+	return cell
+
+func board_fits() -> bool:
+	for cell in board:
+		if unit_width(board[cell]) == 2 and (cell.x == COLS - 1 or board.has(cell + Vector2i(1, 0))):
+			return false
+	return true
+
+func merge_prompt_for(unit: Dictionary) -> String:
+	if unit.s >= 3:
+		return ""
+	var count := 0
+	for other in bench + board.values():
+		if other != null and other.n == unit.n and other.s == unit.s:
+			count += 1
+	if count >= 3:
+		return "%s merge available. Use the Merge button." % unit.n
+	return ""
 
 func set_merge_selection(active: bool):
 	selecting_merge = active
@@ -451,6 +488,9 @@ func confirm_merge():
 		loc_set(loc, null)
 	set_merge_selection(false)
 	msg = "%s upgraded to %d stars!" % [survivor.n, survivor.s]
+	var next_merge := merge_prompt_for(survivor)
+	if not next_merge.is_empty():
+		msg += " " + next_merge
 
 func sell_value(u): return u.t * int(pow(3, u.s - 1)) - (1 if u.s > 1 else 0)
 
@@ -502,10 +542,10 @@ func click(p):
 				return
 		var cell := Vector2i(((Vector2(p) - BO) / CELL).floor())
 		if cell.x >= 0 and cell.x < COLS and cell.y >= 3 and cell.y < ROWS:
-			select_merge_unit(["g", cell])
+			select_merge_unit(["g", board_anchor(cell)])
 		return
 	if GUIDE_MODEL.has_point(p) or GUIDE_BUBBLE.has_point(p):
-		msg = GUIDE_LINE
+		guide_tip_index = (guide_tip_index + 1) % GUIDE_TIPS.size()
 		return
 	for i in items_inv.size():
 		if item_slot_rect(i).has_point(p):
@@ -540,7 +580,7 @@ func click(p):
 	var cx = int(floor(c.x))
 	var cy = int(floor(c.y))
 	if c.x >= 0 and c.y >= 0 and cx < COLS and cy >= 3 and cy < ROWS:
-		click_loc(["g", Vector2i(cx, cy)])
+		click_loc(["g", board_anchor(Vector2i(cx, cy))])
 	else:
 		sel = null
 
@@ -604,10 +644,14 @@ func click_loc(l):
 	var b = loc_get(l)
 	loc_set(sel, b)
 	loc_set(l, a)
-	if board.size() > level:
+	if board.size() > level or not board_fits():
+		var full := board.size() > level
 		loc_set(sel, a)
 		loc_set(l, b)
-		msg = "Board full: you can field %d units at level %d." % [level, level]
+		if full:
+			msg = "Board full: you can field %d units at level %d." % [level, level]
+		else:
+			msg = "That placement needs two free tiles side by side."
 	sel = null
 
 func buy(i):
@@ -623,6 +667,9 @@ func buy(i):
 	gold -= c.t
 	bench[idx] = c.duplicate()
 	shop[i] = null
+	var prompt := merge_prompt_for(bench[idx])
+	if not prompt.is_empty():
+		msg = prompt
 
 func do_btn(i):
 	if phase != "prep": return
@@ -661,6 +708,7 @@ func make_unit(d, team, pos, mult):
 	var st = stats(d)
 	units.append({
 		"d": d, "team": team, "pos": pos,
+		"radius": 0.70 if unit_width(d) == 2 else 0.30,
 		"hp": st.hp * mult, "mx": st.hp * mult, "shield": 0.0,
 		"ad": st.ad * mult, "base_ad": st.ad * mult,
 		"armor": st.armor, "mr": st.mr, "ap": st.ap,
@@ -679,18 +727,24 @@ func roll_enemy_formation():
 	for y in 3:
 		for x in COLS: cells.append(Vector2(x, y))
 	cells.shuffle()
-	var n = mini(int(1 + stage * 0.8) + 1, 9)
-	var maxt = clampi(1 + stage / 2, 1, 5)
+	var n = mini(2 + floori((stage - 1) * 0.6), 7)
+	var maxt = clampi(1 + floori(stage / 2.5), 1, 5)
 	for i in n:
 		var p = DEFS.pick_random()
 		while p[1] > maxt: p = DEFS.pick_random()
 		var s = 1
-		if stage >= 6 and randf() < 0.4: s = 2
-		if stage >= 9 and randf() < 0.3: s = 3
-		enemy_formation.append({
-			"d": {"n": p[0], "t": p[1], "r": p[2], "s": s, "it": []},
-			"pos": cells[i]
-		})
+		if stage >= 7 and randf() < 0.22: s = 2
+		var unit := {"n": p[0], "t": p[1], "r": p[2], "s": s, "it": []}
+		var width := unit_width(unit)
+		for cell in cells:
+			var right = cell + Vector2(1, 0)
+			if width == 2 and not cells.has(right):
+				continue
+			enemy_formation.append({"d": unit, "pos": cell})
+			cells.erase(cell)
+			if width == 2:
+				cells.erase(right)
+			break
 
 func start_battle():
 	if board.is_empty():
@@ -708,9 +762,11 @@ func start_battle():
 	ctime = 0.0
 	aura_timer = 0.0
 	qte = null
-	for k in board: make_unit(board[k], 0, Vector2(k.x, k.y), 1.0)
+	for k in board:
+		make_unit(board[k], 0, Vector2(k) + Vector2((unit_width(board[k]) - 1) * 0.5, 0), 1.0)
 	for enemy in enemy_formation:
-		make_unit(enemy.d, 1, enemy.pos, 0.75 + 0.07 * stage)
+		var center: Vector2 = enemy.pos + Vector2((unit_width(enemy.d) - 1) * 0.5, 0)
+		make_unit(enemy.d, 1, center, 0.70 + 0.045 * stage)
 	msg = ("PvE monsters! " if cur_pve else "") + "Fight! Press SPACE when a unit's prompt appears."
 
 func nearest(u):
@@ -900,8 +956,14 @@ func sim(dt):
 			u.facing = 1.0 if (tgt.pos.x >= u.pos.x) else -1.0
 			u.pos += (tgt.pos - u.pos).normalized() * 1.6 * dt
 			for o in units:
-				if o != u and o.hp > 0 and o.pos.distance_to(u.pos) < 0.5:
-					u.pos += (u.pos - o.pos).normalized() * 1.0 * dt
+				if o == u or o.hp <= 0:
+					continue
+				var delta: Vector2 = u.pos - o.pos
+				var gap: float = u.radius + o.radius
+				if delta.length() < gap:
+					var away := Vector2.RIGHT if delta.is_zero_approx() else delta.normalized()
+					u.pos = o.pos + away * gap
+			u.pos = u.pos.clamp(Vector2.ZERO, Vector2(COLS - 1, ROWS - 1))
 
 func do_cast(u, tgt):
 	u.mana = 0.0
@@ -964,15 +1026,16 @@ func end_combat(a0, a1):
 	var n = absi(streak)
 	var sb = 0 if n < 2 else (1 if n < 4 else (2 if n == 4 else 3))
 	var interest = mini(gold / 10, 5)
-	var inc = 5 + interest + sb + (1 if win else 0)
+	var base := round_income()
+	var inc = base + interest + sb + (3 if win else 0)
 	gold += inc
-	add_xp(2)
+	add_xp(3)
 	var res = "WIN" if win else "LOSS"
 	if not win:
-		var dmg = 2 + 2 * a1
+		var dmg = mini(8, 2 + a1)
 		hp -= dmg
 		res += " (-%d HP)" % dmg
-	msg = "%s. +%d gold (5 base, %d interest, %d streak)." % [res, inc, interest, sb]
+	msg = "%s. +%d gold (%d base, %d interest, %d streak)." % [res, inc, base, interest, sb]
 	if win:
 		for e in units:
 			if e.team == 1 and orbs.size() < 3: orbs.append(e.pos)
@@ -1231,6 +1294,8 @@ func get_unit_hover_info(u, is_combat: bool = false, show_sell_value: bool = tru
 
 	lines.append({"t": "AD: %d | Armor: %d | MR: %d | AP: %d" % [int(st.ad), int(st.armor), int(st.mr), int(st.ap)], "c": Color("5cdb7a")})
 	lines.append({"t": "Attack Speed: +%d%%   Range: %.1f tiles" % [int(st.as_bonus * 100), st.rng], "c": Color("b8a994")})
+	if unit_width(d) == 2:
+		lines.append({"t": "Footprint: 2 tiles side by side", "c": GOLD})
 
 	var its = d.get("it", [])
 	if its.is_empty():
@@ -1319,9 +1384,14 @@ func draw_guide():
 		bubble.position + Vector2(-9, 30), bubble.position + Vector2(1, 33)])
 	draw_colored_polygon(tail, fill)
 	draw_polyline(tail, PAPER_EDGE, 1.0, true)
-	T(bubble.position + Vector2(9, 16), "Click a unit, then a slot", 13)
-	T(bubble.position + Vector2(9, 33), "to move or swap it.", 13)
-	T(bubble.position + Vector2(9, 50), "Use the bottom three rows.", 12)
+	var lines: Array = ["Click a unit, then a tile.", "Use the bottom three rows.", "Click me for a tip."]
+	if guide_tip_index >= 0:
+		lines = GUIDE_TIPS[guide_tip_index]
+	for i in lines.size():
+		T(bubble.position + Vector2(9, 16 + 17 * i), lines[i], 12)
+
+func unit_footprint(cell: Vector2, unit: Dictionary) -> Rect2:
+	return Rect2(BO + cell * CELL, Vector2(unit_width(unit) * CELL, CELL))
 
 func get_equip_preview(u, s_name: String, s_tier: int) -> Dictionary:
 	var title = "%s %s" % [u.n, "*".repeat(u.s)]
@@ -1423,11 +1493,6 @@ func _draw():
 			var hover := hover_strength(r)
 			draw_rect(r, base.lerp(PAPER_HIGHLIGHT, hover * 0.52).darkened(press_strength(r) * 0.14))
 			draw_rect(r, PAPER_EDGE.lerp(PURPLE, hover * 0.55), false, 1.0)
-			if merge_locs.has(["g", Vector2i(x, y)]):
-				draw_rect(r.grow(-2), PURPLE, false, 3.0)
-
-	if sel != null and sel[0] == "g":
-		draw_rect(Rect2(BO + Vector2(sel[1]) * CELL, Vector2(CELL, CELL)), PURPLE, false, 4)
 
 	# Bench
 	for i in 8:
@@ -1482,13 +1547,20 @@ func _draw():
 		if phase == "prep":
 			T(BO + Vector2(0, -16), "ENEMY FORMATION", 13, Color("8E3627"))
 			for enemy in enemy_formation:
-				var c = BO + enemy.pos * CELL + Vector2(32, 32)
-				draw_rect(Rect2(c - Vector2(31, 31), Vector2(62, 62)), Color(RED, 0.10))
+				var footprint := unit_footprint(enemy.pos, enemy.d).grow(-2)
+				draw_rect(footprint, Color(RED, 0.14))
+				draw_rect(footprint, Color(RED, 0.45), false, 1.0)
 				var idle = Time.get_ticks_msec() / 1000.0 * 2.5 + enemy.pos.x
-				token(c, enemy.d, 1, "idle", idle, 0.0, -1.0)
+				token(footprint.get_center(), enemy.d, 1, "idle", idle, 0.0, -1.0)
 		for k in board:
 			var idle_t = Time.get_ticks_msec() / 1000.0 * 2.5 + k.x * 2.0 + k.y
-			token(BO + Vector2(k) * CELL + Vector2(32, 32), board[k], 0, "idle", idle_t, 0.0, 1.0)
+			var footprint := unit_footprint(Vector2(k), board[k]).grow(-2)
+			if unit_width(board[k]) == 2:
+				draw_rect(footprint, Color(PURPLE, 0.14))
+				draw_rect(footprint, Color(PURPLE, 0.48), false, 1.0)
+			if sel == ["g", k] or merge_locs.has(["g", k]):
+				draw_rect(footprint, PURPLE, false, 3.0)
+			token(footprint.get_center(), board[k], 0, "idle", idle_t, 0.0, 1.0)
 
 	for t in texts:
 		T(BO + t.p * CELL + Vector2(-20, 20 - (0.8 - t.t) * 40), t.s, 22, t.c, 80, HORIZONTAL_ALIGNMENT_CENTER)
@@ -1504,7 +1576,8 @@ func _draw():
 			draw_rect(Rect2(r.position + Vector2(1, 1), Vector2(138, 27)), TIER_COL[c.t - 1].darkened(0.32))
 			T(r.position + Vector2(8, 20), c.n, 15, PARCH)
 			draw_unit_stars(r.position + Vector2(105, 14), c.t, 4.0)
-			T(r.position + Vector2(10, 55), "Ranged" if c.r else "Melee", 15)
+			var role := "Ranged" if c.r else "Melee"
+			T(r.position + Vector2(10, 55), "%s / 2 tiles" % role if unit_width(c) == 2 else role, 15)
 			T(r.position + Vector2(10, 75), "HP %d  AD %d" % [u_hp(c), u_ad(c)], 15)
 			T(r.position + Vector2(10, 105), "%d gold" % c.t, 18, Color("87520E") if gold >= c.t else RED)
 		else:
@@ -1527,7 +1600,7 @@ func _draw():
 	T(Vector2(20, 270), "%d / %d / %d / %d / %d %%" % odds, 15)
 	draw_paper_panel(Rect2(12, 288, 230, 22), Color("F4D795"), Color("9C6928"), 2.0)
 	draw_circle(Vector2(25, 299), 5, Color("AB711C"), true, -1, true)
-	T(Vector2(37, 304), "Round end: +%d gold minimum" % (5 + mini(gold / 10, 5)), 13)
+	T(Vector2(37, 304), "Round end: +%d gold minimum" % (round_income() + mini(gold / 10, 5)), 13)
 	draw_guide()
 
 	# Item Shop
@@ -1650,7 +1723,7 @@ func _draw():
 			var cx = int(floor(c.x))
 			var cy = int(floor(c.y))
 			if c.x >= 0 and c.y >= 0 and cx < COLS and cy >= 3 and cy < ROWS:
-				var cell_k = Vector2i(cx, cy)
+				var cell_k := board_anchor(Vector2i(cx, cy))
 				if board.has(cell_k):
 					tip = get_equip_preview(board[cell_k], s_name, s_tier)
 
@@ -1693,7 +1766,7 @@ func _draw():
 
 	if tip == null and phase == "prep":
 		for enemy in enemy_formation:
-			var enemy_tile := Rect2(BO + enemy.pos * CELL, Vector2(CELL, CELL))
+			var enemy_tile := unit_footprint(enemy.pos, enemy.d)
 			if enemy_tile.has_point(mp):
 				tip = get_unit_hover_info(enemy.d, false, false)
 				break
@@ -1717,7 +1790,7 @@ func _draw():
 				var cx = int(floor(c.x))
 				var cy = int(floor(c.y))
 				if c.x >= 0 and c.y >= 0 and cx < COLS and cy >= 3 and cy < ROWS:
-					var cell_k = Vector2i(cx, cy)
+					var cell_k := board_anchor(Vector2i(cx, cy))
 					if board.has(cell_k):
 						tip = get_unit_hover_info(board[cell_k], false)
 
