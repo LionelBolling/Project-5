@@ -14,7 +14,11 @@ const GOLD := Color("E69A2B")
 const RED := Color("D9381E")
 const PAPER_HIGHLIGHT := Color("FFF2DA")
 const PAPER_EDGE := Color("967550")
-const TOAST_DURATION := 3.6
+const TOAST_DURATION := 4.0
+const GUIDE_BUBBLE := Rect2(69, 317, 173, 58)
+const GUIDE_MODEL := Rect2(17, 317, 45, 58)
+const GUIDE_LINE := "Click a unit, then click a slot to move or swap it. Use the bottom three rows."
+const LOOT_WARNING_TIME := 0.9
 const TIER_COL := [Color("8a7a5c"), Color("E69A2B"), Color("893BFF"), Color("D9381E"), Color("1A1617")]
 const DEFS := [["Squire",1,false],["Archer",1,true],["Knight",2,false],["Mage",2,true],
 	["Rogue",3,false],["Cleric",3,true],["Golem",4,false],["Witch",4,true],["Dragon",5,false],["Sage",5,true]]
@@ -175,12 +179,14 @@ var bench := []
 var board := {}
 var sel = null
 var units := []
+var enemy_formation := []
 var texts := []
 var ctime := 0.0
 var qte = null
 var items_inv := []
 var sel_item := -1
 var orbs := []
+var loot_warning_time := 0.0
 var cur_pve := false
 var aura_timer := 0.0
 var mouse_pos := Vector2.ZERO
@@ -218,6 +224,8 @@ func spawn_projectile(from_pos: Vector2, to_pos: Vector2, u_name: String):
 
 func _ready():
 	randomize()
+	hover_amounts[GUIDE_MODEL] = 0.0
+	hover_amounts[GUIDE_BUBBLE] = 0.0
 	for i in 8:
 		bench.append(null)
 		hover_amounts[bench_rect(i)] = 0.0
@@ -230,6 +238,7 @@ func _ready():
 			hover_amounts[Rect2(BO + Vector2(x, y) * CELL, Vector2(CELL, CELL))] = 0.0
 	roll_shop()
 	roll_item_shop()
+	roll_enemy_formation()
 	for i in item_shop.size():
 		hover_amounts[item_btn_rect(i)] = 0.0
 
@@ -377,6 +386,7 @@ func start_prep():
 		roll_shop()
 		roll_item_shop()
 	locked = false
+	roll_enemy_formation()
 
 func loc_get(l):
 	if l[0] == "b": return bench[l[1]]
@@ -447,6 +457,9 @@ func click(p):
 		get_tree().reload_current_scene()
 		return
 	if phase != "prep": return
+	if GUIDE_MODEL.has_point(p) or GUIDE_BUBBLE.has_point(p):
+		msg = GUIDE_LINE
+		return
 	for i in items_inv.size():
 		if item_slot_rect(i).has_point(p):
 			sel_item = -1 if sel_item == i else i
@@ -457,6 +470,8 @@ func click(p):
 			buy_item(i)
 			return
 	for o in orbs:
+		if loot_warning_time > 0.0:
+			break
 		if (BO + o * CELL + Vector2(32, 32)).distance_to(p) < 20:
 			orbs.erase(o)
 			gold += 1
@@ -612,22 +627,8 @@ func make_unit(d, team, pos, mult):
 		"facing": (1.0 if team == 0 else -1.0)
 	})
 
-func start_battle():
-	if board.is_empty():
-		msg = "Place at least one unit on the board first."
-		return
-	sel = null
-	sel_item = -1
-	orbs = []
-	cur_pve = stage in PVE_STAGES
-	phase = "combat"
-	units = []
-	texts = []
-	projectiles = []
-	ctime = 0.0
-	aura_timer = 0.0
-	qte = null
-	for k in board: make_unit(board[k], 0, Vector2(k.x, k.y), 1.0)
+func roll_enemy_formation():
+	enemy_formation.clear()
 	var cells = []
 	for y in 3:
 		for x in COLS: cells.append(Vector2(x, y))
@@ -640,7 +641,30 @@ func start_battle():
 		var s = 1
 		if stage >= 6 and randf() < 0.4: s = 2
 		if stage >= 9 and randf() < 0.3: s = 3
-		make_unit({"n": p[0], "t": p[1], "r": p[2], "s": s, "it": []}, 1, cells[i], 0.75 + 0.07 * stage)
+		enemy_formation.append({
+			"d": {"n": p[0], "t": p[1], "r": p[2], "s": s, "it": []},
+			"pos": cells[i]
+		})
+
+func start_battle():
+	if board.is_empty():
+		msg = "Place at least one unit on the board first."
+		return
+	sel = null
+	sel_item = -1
+	orbs.clear()
+	loot_warning_time = 0.0
+	cur_pve = stage in PVE_STAGES
+	phase = "combat"
+	units = []
+	texts = []
+	projectiles = []
+	ctime = 0.0
+	aura_timer = 0.0
+	qte = null
+	for k in board: make_unit(board[k], 0, Vector2(k.x, k.y), 1.0)
+	for enemy in enemy_formation:
+		make_unit(enemy.d, 1, enemy.pos, 0.75 + 0.07 * stage)
 	msg = ("PvE monsters! " if cur_pve else "") + "Fight! Press SPACE when a unit's prompt appears."
 
 func nearest(u):
@@ -661,6 +685,7 @@ func _process(dt):
 	if phase == "combat": sim(dt)
 	if qte == null:
 		notification_time = maxf(0.0, notification_time - dt)
+	loot_warning_time = maxf(0.0, loot_warning_time - dt)
 	press_time = maxf(0.0, press_time - dt)
 	mouse_pos = get_viewport().get_mouse_position()
 	var can_hover = phase == "prep" and get_viewport().get_visible_rect().has_point(mouse_pos)
@@ -905,11 +930,14 @@ func end_combat(a0, a1):
 	if cur_pve and win:
 		for e in units:
 			if e.team == 1 and orbs.size() < 3: orbs.append(e.pos)
+		if not orbs.is_empty():
+			loot_warning_time = LOOT_WARNING_TIME
+			msg += " Gold orbs incoming. Click to collect."
 		if items_inv.size() < 8:
 			var drop = ITEM_DB.keys().pick_random()
 			var drop_tier = 2 if (stage >= 7 and randf() < 0.25) else 1
 			items_inv.append({"n": drop, "t": drop_tier})
-			msg += " Monster dropped a %s %s! Click orbs for gold." % [drop, "*".repeat(drop_tier)]
+			msg += " Found %s %s!" % [drop, "*".repeat(drop_tier)]
 	stage += 1
 	if hp <= 0: phase = "over"
 	elif stage > 10: phase = "over"
@@ -1140,7 +1168,7 @@ func token(c, d, team = 0, anim_state = "idle", anim_t = 0.0, attack_t = 0.0, fa
 			draw_rect(Rect2(px, c.y + 24, pip_sz, pip_sz), col)
 			draw_rect(Rect2(px, c.y + 24, pip_sz, pip_sz), INK, false, 1.0)
 
-func get_unit_hover_info(u, is_combat: bool = false) -> Dictionary:
+func get_unit_hover_info(u, is_combat: bool = false, is_enemy: bool = false) -> Dictionary:
 	var d = u.d if is_combat else u
 	var st = stats(d)
 	var title = "%s  (Tier %d %s)" % [d.n, d.t, "Ranged" if d.r else "Melee"]
@@ -1166,7 +1194,7 @@ func get_unit_hover_info(u, is_combat: bool = false) -> Dictionary:
 			var col = RARITY_COLS.get(rar, GOLD)
 			lines.append({"t": " • %s %s: %s" % [iname, "*".repeat(itier), get_it_desc(iname, itier)], "c": col})
 
-	if not is_combat:
+	if not is_combat and not is_enemy:
 		lines.append({"t": "Sell Value: %d Gold" % sell_value(d), "c": Color("e69a2b")})
 
 	return {"title": title, "col": TIER_COL[clampi(d.t - 1, 0, 4)], "lines": lines}
@@ -1212,6 +1240,23 @@ func draw_notification():
 	draw_rect(r, Color(GOLD, alpha), false, 1.0)
 	draw_rect(Rect2(r.position + Vector2(0, 0), Vector2(4, size.y)), Color(GOLD, alpha))
 	T(r.position + Vector2(0, 32), msg, 17, Color(PAPER_HIGHLIGHT, alpha), size.x, HORIZONTAL_ALIGNMENT_CENTER)
+
+func draw_guide():
+	var center := Vector2(39, 346)
+	var idle := Time.get_ticks_msec() / 1000.0
+	draw_fantasy_unit(center, {"n": "Sage"}, 0, "idle", idle)
+	T(Vector2(17, 381), "GUIDE", 11, INK, 45, HORIZONTAL_ALIGNMENT_CENTER)
+	var hover := maxf(hover_strength(GUIDE_MODEL), hover_strength(GUIDE_BUBBLE))
+	var bubble := animated_rect(GUIDE_BUBBLE, 1.0)
+	var fill := Color("FFF4DE").lightened(hover * 0.4)
+	draw_paper_panel(bubble, fill, PAPER_EDGE, 2.0)
+	var tail := PackedVector2Array([bubble.position + Vector2(1, 21),
+		bubble.position + Vector2(-9, 30), bubble.position + Vector2(1, 33)])
+	draw_colored_polygon(tail, fill)
+	draw_polyline(tail, PAPER_EDGE, 1.0, true)
+	T(bubble.position + Vector2(9, 16), "Click a unit, then a slot", 13)
+	T(bubble.position + Vector2(9, 33), "to move or swap it.", 13)
+	T(bubble.position + Vector2(9, 50), "Use the bottom three rows.", 12)
 
 func get_equip_preview(u, s_name: String, s_tier: int) -> Dictionary:
 	var title = "%s %s" % [u.n, "*".repeat(u.s)]
@@ -1360,6 +1405,13 @@ func _draw():
 					draw_line(screen_p - dir * 16.0, screen_p, Color("fff8c8"), 3.5)
 					draw_circle(screen_p, 4.0, Color("ffd700"))
 	else:
+		if phase == "prep":
+			T(BO + Vector2(0, -16), "ENEMY FORMATION", 13, Color("8E3627"))
+			for enemy in enemy_formation:
+				var c = BO + enemy.pos * CELL + Vector2(32, 32)
+				draw_rect(Rect2(c - Vector2(31, 31), Vector2(62, 62)), Color(RED, 0.10))
+				var idle = Time.get_ticks_msec() / 1000.0 * 2.5 + enemy.pos.x
+				token(c, enemy.d, 1, "idle", idle, 0.0, -1.0)
 		for k in board:
 			var idle_t = Time.get_ticks_msec() / 1000.0 * 2.5 + k.x * 2.0 + k.y
 			token(BO + Vector2(k) * CELL + Vector2(32, 32), board[k], 0, "idle", idle_t, 0.0, 1.0)
@@ -1397,7 +1449,10 @@ func _draw():
 	var odds = ODDS[level]
 	T(Vector2(20, 250), "Shop odds (T1-T5):", 15)
 	T(Vector2(20, 270), "%d / %d / %d / %d / %d %%" % odds, 15)
-	T(Vector2(20, 330), "Click a unit, then click a\nslot to move/swap it.\nBottom 3 board rows only.", 14)
+	draw_paper_panel(Rect2(12, 288, 230, 22), Color("F4D795"), Color("9C6928"), 2.0)
+	draw_circle(Vector2(25, 299), 5, Color("AB711C"), true, -1, true)
+	T(Vector2(37, 304), "Round end: +%d gold minimum" % (5 + mini(gold / 10, 5)), 13)
+	draw_guide()
 
 	# Item Shop
 	T(Vector2(20, 392), "ITEM SHOP", 14)
@@ -1439,8 +1494,15 @@ func _draw():
 	# Loot orbs
 	for o in orbs:
 		var oc = BO + o * CELL + Vector2(32, 32)
-		draw_circle(oc, 14, GOLD)
-		draw_arc(oc, 14, 0, TAU, 20, INK, 2)
+		if loot_warning_time > 0.0:
+			var progress := 1.0 - loot_warning_time / LOOT_WARNING_TIME
+			draw_circle(oc, 18, Color(GOLD, 0.22 + progress * 0.36))
+			draw_arc(oc, 19, -PI / 2.0, -PI / 2.0 + maxf(0.01, progress) * TAU, 24, GOLD, 3.0, true)
+			T(oc + Vector2(-18, 6), "!", 18, Color("774314"), 36, HORIZONTAL_ALIGNMENT_CENTER)
+		else:
+			draw_circle(oc, 14, GOLD)
+			draw_arc(oc, 14, 0, TAU, 20, INK, 2)
+			T(oc + Vector2(-14, 5), "+1", 12, INK, 28, HORIZONTAL_ALIGNMENT_CENTER)
 
 	# Stat sheet
 	if sel != null and loc_get(sel) != null:
@@ -1538,6 +1600,13 @@ func _draw():
 					lines.append({"t": "Next Tier (%s): %s" % ["*".repeat(itier + 1), get_it_desc(iname, itier + 1)], "c": Color("b8a994")})
 				lines.append({"t": "Click to select, then hover/click a unit", "c": Color("8a7a5c")})
 				tip = {"title": "%s %s (%s)" % [iname, "*".repeat(itier), rar.to_upper()], "col": r_col, "lines": lines}
+				break
+
+	if tip == null and phase == "prep":
+		for enemy in enemy_formation:
+			var enemy_tile := Rect2(BO + enemy.pos * CELL, Vector2(CELL, CELL))
+			if enemy_tile.has_point(mp):
+				tip = get_unit_hover_info(enemy.d, false, true)
 				break
 
 	# Unit detail hover card (when no item is actively selected)
